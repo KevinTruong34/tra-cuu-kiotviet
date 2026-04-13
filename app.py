@@ -26,7 +26,7 @@ if not st.session_state["authenticated"]:
 # --- GIAO DIỆN CHÍNH ---
 st.title("🔍 Tra cứu Lịch sử Khách hàng")
 
-if st.button("🔄 Cập nhật dữ liệu từ Google Sheets"):
+if st.button("🔄 Cập nhật dữ liệu"):
     st.cache_data.clear()
     st.success("Đã đồng bộ dữ liệu mới nhất!")
 
