@@ -17,7 +17,7 @@ st.markdown(hide_st_style, unsafe_allow_html=True)
 
 # 2. THÔNG TIN HỆ THỐNG
 PASSWORD_SYSTEM = "9999"
-SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT27nMRVzpVgaCVNmvREvonJM_fRJ2uGxm4I8LT2PuBxIaFtvuqIO54tOixVCmmpEcLThzEkG92iNsb/pub?output=csv"
+SHEET_URL = st.secrets["MY_SHEET_URL"]
 
 # 3. BẢO MẬT
 if "authenticated" not in st.session_state:
