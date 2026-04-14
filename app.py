@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # ==========================================
-# PHIÊN BẢN: 6.2.6
+# PHIÊN BẢN: 6.2.7
 # ==========================================
 
 # 1. CẤU HÌNH GIAO DIỆN
@@ -91,10 +91,10 @@ def hien_thi_hoa_don(inv_data, inv_code):
             </div>
         """, unsafe_allow_html=True)
         
-        c1, c2, c3 = st.columns(3)
+        # CHỈNH SỬA TẠI ĐÂY: Chuyển thành 2 cột thay vì 3 cột
+        c1, c2 = st.columns(2)
         c1.metric("Tổng tiền hàng", f"{row.get('Tổng tiền hàng', 0):,.0f} đ")
-        c2.metric("Tổng hóa đơn", f"{row.get('Khách cần trả', 0):,.0f} đ")
-        c3.metric("Thực tế trả", f"{row.get('Khách đã trả', 0):,.0f} đ")
+        c2.metric("Thực tế trả", f"{row.get('Khách đã trả', 0):,.0f} đ")
         
         cols = ['Mã hàng', 'Tên hàng', 'Số lượng', 'Đơn giá', 'Thành tiền', 'Ghi chú hàng hóa']
         df_view = inv_data[[c for c in cols if c in inv_data.columns]].copy()
@@ -140,7 +140,6 @@ try:
         list_chi_nhanh = raw_data['Chi nhánh'].unique().tolist()
         selected_branches = st.multiselect("Chi nhánh:", options=list_chi_nhanh, default=list_chi_nhanh)
 
-    # Đã dời dòng cảnh báo lỗi của bạn xuống đây để Mobile đọc được
     if st.session_state.get('so_dong_trung', 0) > 0:
         st.warning(f"⚠️ **Cảnh báo dữ liệu:** Phát hiện {st.session_state['so_dong_trung']} hóa đơn lỗi.")
 
