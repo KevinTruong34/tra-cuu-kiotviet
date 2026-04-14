@@ -99,7 +99,7 @@ def hien_thi_hoa_don(inv_data, inv_code):
             if c in df_view.columns:
                 df_view[c] = df_view[c].apply(lambda x: f"{x:,.0f} đ")
                 
-        with st.expander("📦 Xem chi tiết hàng hóa", expanded=False):
+        with st.expander(" Xem chi tiết hàng hóa", expanded=False):
             st.dataframe(df_view, use_container_width=True, hide_index=True)
 
 def xu_ly_danh_sach_hoa_don(res):
@@ -123,7 +123,7 @@ try:
     
     # HIỂN THỊ CẢNH BÁO TRÙNG LẶP (NẾU CÓ)
     if st.session_state.get('so_dong_trung', 0) > 0:
-        st.warning(f"⚠️ **Cảnh báo dữ liệu:** Phát hiện {st.session_state['so_dong_trung']} dòng bị lặp lại trong Google Sheets (có thể do copy-paste nhầm). Web đã tự động ẩn đi các dòng dư để tính toán chính xác, nhưng bạn nên vào Google Sheets để xóa thủ công cho sạch dữ liệu.")
+        st.warning(f"⚠️ **Cảnh báo dữ liệu:** Phát hiện {st.session_state['so_dong_trung']} hóa đơn gặp lỗi.")
 
     col_h1, col_h2, col_h3 = st.columns([2, 0.5, 1.5])
     
