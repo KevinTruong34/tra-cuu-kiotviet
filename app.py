@@ -1,6 +1,10 @@
 import streamlit as st
 import pandas as pd
 
+# ==========================================
+# PHIÊN BẢN: 6.2.6
+# ==========================================
+
 # 1. CẤU HÌNH GIAO DIỆN
 st.set_page_config(page_title="Hệ thống Tra cứu Watch Store", layout="wide")
 
@@ -120,9 +124,6 @@ def xu_ly_danh_sach_hoa_don(res):
 # 5. BỐ CỤC HEADER & TRA CỨU
 try:
     raw_data = load_data(SHEET_URL)
-    
-    if st.session_state.get('so_dong_trung', 0) > 0:
-        st.warning(f"⚠️ **Cảnh báo dữ liệu:** Phát hiện {st.session_state['so_dong_trung']} hóa đơn lỗi.")
 
     col_h1, col_h2, col_h3 = st.columns([2, 0.5, 1.5])
     
@@ -138,6 +139,10 @@ try:
     with col_h3:
         list_chi_nhanh = raw_data['Chi nhánh'].unique().tolist()
         selected_branches = st.multiselect("Chi nhánh:", options=list_chi_nhanh, default=list_chi_nhanh)
+
+    # Đã dời dòng cảnh báo lỗi của bạn xuống đây để Mobile đọc được
+    if st.session_state.get('so_dong_trung', 0) > 0:
+        st.warning(f"⚠️ **Cảnh báo dữ liệu:** Phát hiện {st.session_state['so_dong_trung']} hóa đơn lỗi.")
 
     data = raw_data[raw_data['Chi nhánh'].isin(selected_branches)].copy()
     data['SĐT_Search'] = data['Điện thoại'].fillna('').str.replace(r'\D+', '', regex=True)
