@@ -4,21 +4,25 @@ import pandas as pd
 # 1. CẤU HÌNH GIAO DIỆN
 st.set_page_config(page_title="Hệ thống Tra cứu Watch Store", layout="wide")
 
-# --- CSS TÙY CHỈNH: ẨN LOGO, GIỮ MENU SÁNG/TỐI & THU NHỎ SỐ TIỀN ---
+# --- CSS TỐI THƯỢNG: XÓA SỔ HOÀN TOÀN HEADER & FOOTER ---
 st.markdown("""
     <style>
-    /* Ẩn nút Deploy và thanh công cụ Github */
+    /* 1. Ẩn hoàn toàn thanh Header trên cùng (Chứa Menu, Deploy) */
+    header {visibility: hidden !important;}
+    
+    /* 2. Ẩn hoàn toàn khu vực Footer dưới cùng (Chứa Manage app) */
+    footer {visibility: hidden !important;}
+    
+    /* 3. Đánh chặn sâu vào các thành phần của Streamlit Cloud */
+    #stDecoration {display:none !important;}
     .stAppDeployButton {display:none !important;}
-    [data-testid="stToolbar"] {right: 40px;}
+    [data-testid="stHeader"] {display: none !important;}
+    [data-testid="stToolbar"] {display: none !important;}
     
-    /* Ẩn dòng chữ Hosted with Streamlit ở góc dưới */
-    [data-testid="viewerBadge"] {display: none !important;}
-    footer {display:none !important;}
+    /* 4. Khử khoảng trống dư thừa do Header để lại ở trên cùng */
+    .block-container {padding-top: 1rem !important; padding-bottom: 0rem !important;}
     
-    /* Giữ lại MainMenu để chỉnh Sáng/Tối */
-    #MainMenu {visibility: visible;}
-    
-    /* THU NHỎ KÍCH THƯỚC CÁC Ô SỐ TIỀN (METRIC) */
+    /* 5. Thu nhỏ số tiền */
     [data-testid="stMetricValue"] {font-size: 1.4rem !important;}
     [data-testid="stMetricLabel"] {font-size: 0.9rem !important; color: gray;}
     </style>
@@ -54,12 +58,9 @@ def parse_money(val):
 def load_data(url):
     df = pd.read_csv(url, dtype=str)
     
-    # KIỂM TRA VÀ TỰ ĐỘNG LỌC TRÙNG LẶP DO COPY NHẦM
     tong_dong_ban_dau = len(df)
     df = df.drop_duplicates()
     so_dong_trung = tong_dong_ban_dau - len(df)
-    
-    # Lưu số lượng trùng lặp vào session để hiện cảnh báo
     st.session_state['so_dong_trung'] = so_dong_trung
     
     money_cols = ['Tổng tiền hàng', 'Khách cần trả', 'Khách đã trả', 'Đơn giá', 'Thành tiền']
@@ -75,7 +76,6 @@ def hien_thi_hoa_don(inv_data, inv_code):
     ten_kh = row.get('Tên khách hàng', 'Khách lẻ')
     sdt = row.get('Điện thoại', 'N/A')
     
-    # LÀM NỔI BẬT TIÊU ĐỀ BẰNG MARKDOWN (DẤU **)
     header = f"🧾 **{inv_code}** — {row.get('Thời gian', '')} | **{ten_kh}** ({sdt})"
     
     with st.expander(header, expanded=True):
@@ -121,9 +121,8 @@ def xu_ly_danh_sach_hoa_don(res):
 try:
     raw_data = load_data(SHEET_URL)
     
-    # HIỂN THỊ CẢNH BÁO TRÙNG LẶP (NẾU CÓ)
     if st.session_state.get('so_dong_trung', 0) > 0:
-        st.warning(f"⚠️ **Cảnh báo dữ liệu:** Phát hiện {st.session_state['so_dong_trung']} hóa đơn gặp lỗi.")
+        st.warning(f"⚠️ **Cảnh báo dữ liệu:** Phát hiện {st.session_state['so_dong_trung']} hóa đơn lỗi.")
 
     col_h1, col_h2, col_h3 = st.columns([2, 0.5, 1.5])
     
