@@ -1,16 +1,16 @@
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 from supabase import create_client, Client
-from datetime import datetime
+from datetime import datetime, timedelta
+import numpy as np
 
 # ==========================================
-# PHIÊN BẢN: 8.0.0
+# PHIEN BAN: 9.0.0
 # ==========================================
 
-# 1. CẤU HÌNH GIAO DIỆN
-st.set_page_config(page_title="Hệ thống Tra cứu Watch Store", layout="wide")
+st.set_page_config(page_title="Hệ thống Watch Store", layout="wide")
 
-# --- CSS TỐI THƯỢNG ---
 st.markdown("""
     <style>
     header {visibility: hidden !important;}
@@ -26,20 +26,17 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. THONG TIN HE THONG
 PASSWORD_SYSTEM = "9999"
 PASSWORD_ADMIN = "8888"
 
-# Ket noi Supabase tu Secrets
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 except Exception:
-    st.error("Chua cau hinh SUPABASE_URL va SUPABASE_KEY trong Streamlit Secrets!")
+    st.error("Chưa cấu hình SUPABASE_URL và SUPABASE_KEY trong Streamlit Secrets!")
     st.stop()
 
-# 3. BAO MAT DANG NHAP
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
@@ -54,13 +51,10 @@ if not st.session_state["authenticated"]:
             st.error("Mật khẩu không chính xác!")
     st.stop()
 
-# 4. HAM XU LY CHUNG
-def parse_money(val):
-    if pd.isna(val): return 0
-    val = str(val).strip().replace('.', '').replace(',', '.')
-    try: return float(val)
-    except: return 0
 
+# ==========================================
+# HAM XU LY CHUNG
+# ==========================================
 @st.cache_data(ttl=300)
 def load_hoa_don():
     all_rows = []
@@ -85,6 +79,14 @@ def load_hoa_don():
     for col in money_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    # Parse ngay thang
+    if 'Thời gian' in df.columns:
+        df['_ngay'] = pd.to_datetime(df['Thời gian'], format='%d/%m/%Y %H:%M', errors='coerce')
+        if df['_ngay'].isna().all():
+            df['_ngay'] = pd.to_datetime(df['Thời gian'], dayfirst=True, errors='coerce')
+        df['_date'] = df['_ngay'].dt.date
+
     return df
 
 @st.cache_data(ttl=300)
@@ -111,6 +113,213 @@ def load_the_kho():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     return df
+
+
+# ==========================================
+# MODULE 0: TONG QUAN BAN HANG (DASHBOARD)
+# ==========================================
+def module_tong_quan():
+    try:
+        raw = load_hoa_don()
+        if raw.empty or '_date' not in raw.columns:
+            st.info("💡 Chưa có dữ liệu hóa đơn để hiển thị tổng quan.")
+            return
+
+        # --- BO LOC THOI GIAN ---
+        today = datetime.now().date()
+        yesterday = today - timedelta(days=1)
+        first_of_month = today.replace(day=1)
+        first_of_last_month = (first_of_month - timedelta(days=1)).replace(day=1)
+        last_of_last_month = first_of_month - timedelta(days=1)
+
+        col_filter, _ = st.columns([2, 3])
+        with col_filter:
+            ky_chon = st.selectbox(
+                "Kỳ xem:",
+                ["Hôm nay", "Hôm qua", "7 ngày qua", "Tháng này", "Tháng trước"],
+                index=3,
+                label_visibility="collapsed"
+            )
+
+        if ky_chon == "Hôm nay":
+            date_from, date_to = today, today
+            compare_from, compare_to = yesterday, yesterday
+            label_ss = "so với hôm qua"
+        elif ky_chon == "Hôm qua":
+            date_from, date_to = yesterday, yesterday
+            day_before = yesterday - timedelta(days=1)
+            compare_from, compare_to = day_before, day_before
+            label_ss = "so với hôm kia"
+        elif ky_chon == "7 ngày qua":
+            date_from = today - timedelta(days=6)
+            date_to = today
+            compare_from = today - timedelta(days=13)
+            compare_to = today - timedelta(days=7)
+            label_ss = "so với 7 ngày trước đó"
+        elif ky_chon == "Tháng này":
+            date_from, date_to = first_of_month, today
+            # So sanh cung ky thang truoc
+            compare_from = first_of_last_month
+            # Cung ngay trong thang truoc
+            try:
+                compare_to = first_of_last_month.replace(day=today.day)
+            except ValueError:
+                compare_to = last_of_last_month
+            label_ss = "so với cùng kỳ tháng trước"
+        else:  # Thang truoc
+            date_from, date_to = first_of_last_month, last_of_last_month
+            month_before_last_first = (first_of_last_month - timedelta(days=1)).replace(day=1)
+            month_before_last_end = first_of_last_month - timedelta(days=1)
+            compare_from, compare_to = month_before_last_first, month_before_last_end
+            label_ss = "so với tháng trước nữa"
+
+        # --- LOC DU LIEU ---
+        hoan_thanh = raw[raw['Trạng thái'] == 'Hoàn thành'].copy()
+
+        df_ky = hoan_thanh[(hoan_thanh['_date'] >= date_from) & (hoan_thanh['_date'] <= date_to)]
+        df_ss = hoan_thanh[(hoan_thanh['_date'] >= compare_from) & (hoan_thanh['_date'] <= compare_to)]
+
+        # Hom nay rieng (luon hien thi)
+        df_today = hoan_thanh[hoan_thanh['_date'] == today]
+        df_yesterday = hoan_thanh[hoan_thanh['_date'] == yesterday]
+
+        # --- TINH TOAN METRICS ---
+        # Doanh thu = tong "Khach da tra" cua cac hoa don duy nhat
+        def tinh_doanh_thu(df_in):
+            if df_in.empty:
+                return 0, 0
+            # Lay dong dau cua moi hoa don (tranh cong trung khi 1 HD nhieu dong hang)
+            df_unique = df_in.drop_duplicates(subset=['Mã hóa đơn'], keep='first')
+            dt = df_unique['Khách đã trả'].sum()
+            so_hd = df_unique['Mã hóa đơn'].nunique()
+            return dt, so_hd
+
+        dt_today, so_hd_today = tinh_doanh_thu(df_today)
+        dt_yesterday, _ = tinh_doanh_thu(df_yesterday)
+        dt_ky, so_hd_ky = tinh_doanh_thu(df_ky)
+        dt_ss, _ = tinh_doanh_thu(df_ss)
+
+        # % thay doi
+        def phan_tram(moi, cu):
+            if cu == 0:
+                return None
+            return ((moi - cu) / cu) * 100
+
+        pct_vs_yesterday = phan_tram(dt_today, dt_yesterday)
+        pct_vs_compare = phan_tram(dt_ky, dt_ss)
+
+        # --- HIEN THI METRICS ---
+        st.markdown("#### Kết quả bán hàng hôm nay")
+
+        m1, m2, m3, m4 = st.columns(4)
+
+        with m1:
+            st.metric(
+                "💰 Doanh thu",
+                f"{dt_today:,.0f}",
+                help=f"{so_hd_today} hóa đơn"
+            )
+            st.caption(f"{so_hd_today} hóa đơn")
+
+        with m2:
+            st.metric("🔄 Trả hàng", "0")
+
+        with m3:
+            if pct_vs_yesterday is not None:
+                arrow = "↑" if pct_vs_yesterday >= 0 else "↓"
+                color = "green" if pct_vs_yesterday >= 0 else "red"
+                st.metric("Doanh thu thuần", f"{abs(pct_vs_yesterday):.2f}%")
+                st.caption(f"{arrow} So với hôm qua")
+            else:
+                st.metric("Doanh thu thuần", "—")
+                st.caption("So với hôm qua")
+
+        with m4:
+            if pct_vs_compare is not None:
+                arrow = "↑" if pct_vs_compare >= 0 else "↓"
+                st.metric("Doanh thu thuần", f"{abs(pct_vs_compare):.2f}%")
+                st.caption(f"{arrow} {label_ss}")
+            else:
+                st.metric("Doanh thu thuần", "—")
+                st.caption(label_ss)
+
+        st.markdown("---")
+
+        # --- BIEU DO DOANH THU ---
+        st.markdown(f"**Doanh thu thuần: {dt_ky:,.0f}**")
+
+        if not df_ky.empty:
+            # Tinh doanh thu theo ngay va chi nhanh
+            df_chart_base = df_ky.drop_duplicates(subset=['Mã hóa đơn'], keep='first')
+            df_chart = df_chart_base.groupby(['_date', 'Chi nhánh'])['Khách đã trả'].sum().reset_index()
+            df_chart.columns = ['Ngày', 'Chi nhánh', 'Doanh thu']
+
+            # Tao pivot table
+            pivot = df_chart.pivot_table(index='Ngày', columns='Chi nhánh', values='Doanh thu', fill_value=0)
+            pivot = pivot.sort_index()
+
+            # Mau sac cho tung chi nhanh (giong KiotViet)
+            color_map = {
+                '100 Lê Quý Đôn': '#2E86DE',
+                'Coop Vũng Tàu': '#27AE60',
+                'GO BÀ RỊA': '#F39C12',
+            }
+            # Fallback colors
+            fallback_colors = ['#2E86DE', '#27AE60', '#F39C12', '#E74C3C', '#9B59B6']
+
+            fig = go.Figure()
+
+            for i, cn in enumerate(pivot.columns):
+                color = color_map.get(cn, fallback_colors[i % len(fallback_colors)])
+                fig.add_trace(go.Bar(
+                    x=[d.strftime('%d') for d in pivot.index],
+                    y=pivot[cn],
+                    name=cn,
+                    marker_color=color,
+                    hovertemplate=f'{cn}<br>%{{x}}/%{{customdata}}<br>%{{y:,.0f}} đ<extra></extra>',
+                    customdata=[d.strftime('%m') for d in pivot.index]
+                ))
+
+            fig.update_layout(
+                barmode='stack',
+                height=400,
+                margin=dict(l=0, r=0, t=10, b=0),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=-0.2,
+                    xanchor="center",
+                    x=0.5
+                ),
+                yaxis=dict(
+                    tickformat=',.0f',
+                    gridcolor='#eee'
+                ),
+                xaxis=dict(
+                    title=None,
+                    dtick=1
+                ),
+                plot_bgcolor='white',
+                font=dict(size=12)
+            )
+
+            # Format y-axis: "tr" cho trieu
+            max_val = pivot.sum(axis=1).max() if not pivot.empty else 0
+            if max_val >= 1_000_000:
+                fig.update_layout(
+                    yaxis=dict(
+                        tickvals=[i * 6_000_000 for i in range(int(max_val / 6_000_000) + 2)],
+                        ticktext=[f"{int(i*6)} tr" for i in range(int(max_val / 6_000_000) + 2)],
+                        gridcolor='#eee'
+                    )
+                )
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Không có dữ liệu trong kỳ này.")
+
+    except Exception as e:
+        st.error(f"Lỗi tải tổng quan: {e}")
 
 
 # ==========================================
@@ -238,7 +447,6 @@ def module_the_kho():
 # MODULE 3: QUAN TRI DU LIEU
 # ==========================================
 def module_quan_tri():
-    # --- Xac thuc Admin ---
     if "admin_auth" not in st.session_state:
         st.session_state["admin_auth"] = False
 
@@ -253,47 +461,12 @@ def module_quan_tri():
                 st.error("Sai mật khẩu quản trị!")
         return
 
-    # ====== TONG QUAN DU LIEU ======
-    st.markdown("### 📊 Tổng quan dữ liệu")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        try:
-            res = supabase.table("hoa_don").select("id", count="exact").execute()
-            so_hd = res.count if res.count else 0
-        except Exception:
-            so_hd = "?"
-        st.metric("Hóa đơn", f"{so_hd:,} dòng" if isinstance(so_hd, int) else so_hd)
-
-    with col2:
-        try:
-            res = supabase.table("the_kho").select("id", count="exact").execute()
-            so_tk = res.count if res.count else 0
-        except Exception:
-            so_tk = "?"
-        st.metric("Thẻ kho", f"{so_tk:,} dòng" if isinstance(so_tk, int) else so_tk)
-
-    try:
-        data_kho = load_the_kho()
-        if not data_kho.empty and 'Chi nhánh' in data_kho.columns:
-            thong_ke = data_kho.groupby('Chi nhánh').size().reset_index(name='Số dòng')
-            st.markdown("**Thẻ kho theo chi nhánh:**")
-            st.dataframe(thong_ke, use_container_width=True, hide_index=True)
-    except Exception:
-        pass
-
-    st.markdown("---")
-
     # ====== UPLOAD DU LIEU ======
     st.markdown("### 📤 Upload dữ liệu")
     tab_up1, tab_up2 = st.tabs(["📦 Upload Thẻ kho", "🧾 Upload Hóa đơn"])
 
-    # ------ TAB UPLOAD THE KHO ------
     with tab_up1:
-        st.markdown("""
-        **Hướng dẫn:** Tải file **Xuất nhập tồn chi tiết** từ KiotViet (`.xlsx`), kéo thả vào đây.
-        Hệ thống sẽ tự xử lý format và đẩy lên database.
-        """)
+        st.markdown("**Hướng dẫn:** Tải file **Xuất nhập tồn chi tiết** từ KiotViet (`.xlsx`), kéo thả vào đây.")
         uploaded_kho = st.file_uploader("Chọn file Excel thẻ kho:", type=["xlsx", "xls"], key="up_kho")
 
         if uploaded_kho:
@@ -332,8 +505,6 @@ def module_quan_tri():
                         df_kho = df_kho.where(pd.notnull(df_kho), None)
                         records = df_kho.to_dict(orient='records')
 
-                        # Convert numpy int to Python int for JSON
-                        import numpy as np
                         for rec in records:
                             for k, v in rec.items():
                                 if isinstance(v, (np.integer,)):
@@ -368,11 +539,8 @@ def module_quan_tri():
             except Exception as e:
                 st.error(f"Lỗi đọc file: {e}")
 
-    # ------ TAB UPLOAD HOA DON ------
     with tab_up2:
-        st.markdown("""
-        **Hướng dẫn:** Tải file **Danh sách hóa đơn** từ KiotViet (`.xlsx`), kéo thả vào đây.
-        """)
+        st.markdown("**Hướng dẫn:** Tải file **Danh sách hóa đơn** từ KiotViet (`.xlsx`), kéo thả vào đây.")
         uploaded_hd = st.file_uploader("Chọn file Excel hóa đơn:", type=["xlsx", "xls"], key="up_hd")
 
         if uploaded_hd:
@@ -411,7 +579,6 @@ def module_quan_tri():
                         df_hd = df_hd.where(pd.notnull(df_hd), None)
                         records_hd = df_hd.to_dict(orient='records')
 
-                        import numpy as np
                         for rec in records_hd:
                             for k, v in rec.items():
                                 if isinstance(v, (np.integer,)):
@@ -448,10 +615,11 @@ def module_quan_tri():
 
     st.markdown("---")
 
-    # ====== XOA DU LIEU ======
-    st.markdown("### 🗑️ Xóa dữ liệu")
+    # ====== XOA DU LIEU THEO KY ======
+    st.markdown("### 🗑️ Xóa dữ liệu cũ")
+    st.caption("Dùng khi cần xóa dữ liệu cũ trước khi upload lại, hoặc dọn dẹp dữ liệu hàng tháng.")
 
-    with st.expander("⚠️ Khu vực nguy hiểm — Xóa dữ liệu", expanded=False):
+    with st.expander("⚠️ Khu vực nguy hiểm", expanded=False):
         col_del1, col_del2 = st.columns(2)
 
         with col_del1:
@@ -480,8 +648,8 @@ def module_quan_tri():
         except Exception:
             so_dong_xoa = "?"
 
-        pham_vi = f" (chi nhánh: {cn_xoa})" if cn_xoa != "-- Tất cả --" else " (TOÀN BỘ)"
-        st.warning(f"Sẽ xóa **{so_dong_xoa}** dòng từ bảng `{bang_xoa}`{pham_vi}")
+        pham_vi = f" chi nhánh **{cn_xoa}**" if cn_xoa != "-- Tất cả --" else " **TOÀN BỘ**"
+        st.warning(f"Sẽ xóa **{so_dong_xoa}** dòng từ bảng `{bang_xoa}` —{pham_vi}")
 
         confirm_text = st.text_input('Gõ **XOA** để xác nhận:', key="confirm_del")
 
@@ -502,26 +670,28 @@ def module_quan_tri():
 
 
 # ==========================================
-# 5. DIEU HUONG CHINH
+# DIEU HUONG CHINH
 # ==========================================
 col_h1, col_h2 = st.columns([3, 1])
 with col_h1:
     chuc_nang = st.radio(
         "Chọn phân hệ:",
-        ["🧾 Tra cứu Hóa đơn", "📦 Lịch sử Thẻ kho", "⚙️ Quản trị"],
+        ["📊 Tổng quan", "🧾 Hóa đơn", "📦 Thẻ kho", "⚙️ Quản trị"],
         horizontal=True,
         label_visibility="collapsed"
     )
 with col_h2:
-    if st.button("🔄 Reload App", use_container_width=True):
+    if st.button("🔄 Reload", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
 st.markdown("<hr style='margin-top: 0px; margin-bottom: 20px;'>", unsafe_allow_html=True)
 
-if chuc_nang == "🧾 Tra cứu Hóa đơn":
+if chuc_nang == "📊 Tổng quan":
+    module_tong_quan()
+elif chuc_nang == "🧾 Hóa đơn":
     module_hoa_don()
-elif chuc_nang == "📦 Lịch sử Thẻ kho":
+elif chuc_nang == "📦 Thẻ kho":
     module_the_kho()
 else:
     module_quan_tri()
