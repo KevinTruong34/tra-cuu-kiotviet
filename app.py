@@ -413,7 +413,34 @@ def load_hang_hoa() -> pd.DataFrame:
         df["gia_ban"] = pd.to_numeric(df["gia_ban"], errors="coerce").fillna(0)
     return df
 
-def module_tong_quan():
+@st.cache_data(ttl=300)
+def load_phieu_chuyen_kho(branches_key: tuple = None):
+    """Load phiếu chuyển kho — filter theo chi nhánh (từ HOẶC tới)."""
+    all_rows, batch, offset = [], 1000, 0
+    while True:
+        q = supabase.table("phieu_chuyen_kho").select("*") \
+            .order("ngay_chuyen", desc=True)
+        res = q.range(offset, offset + batch - 1).execute()
+        if not res.data: break
+        all_rows.extend(res.data)
+        if len(res.data) < batch: break
+        offset += batch
+    if not all_rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(all_rows)
+    # Filter: chỉ giữ phiếu có liên quan đến ít nhất 1 trong các CN được chọn
+    if branches_key:
+        bk = list(branches_key)
+        mask = df["tu_chi_nhanh"].isin(bk) | df["toi_chi_nhanh"].isin(bk)
+        df = df[mask].reset_index(drop=True)
+    for col in ["so_luong_chuyen","so_luong_nhan","tong_sl_chuyen","tong_sl_nhan",
+                "tong_mat_hang","gia_chuyen","thanh_tien_chuyen","thanh_tien_nhan","tong_gia_tri"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+    if "ngay_chuyen" in df.columns:
+        df["_ngay"] = pd.to_datetime(df["ngay_chuyen"], errors="coerce")
+        df["_date"] = df["_ngay"].dt.date
+    return df
     user   = get_user()
     active = get_active_branch()
     role_label = {"admin":"Admin","ke_toan":"Kế toán","nhan_vien":"Nhân viên"}.get(user.get("role"),"")
@@ -957,6 +984,178 @@ def module_nhan_vien():
 
 
 # ==========================================
+# MODULE: CHUYỂN HÀNG (v13.2)
+# ==========================================
+
+def module_chuyen_hang():
+    """
+    View phiếu chuyển kho theo chuẩn KiotViet:
+    - Grouped by ngày
+    - Mỗi phiếu: từ → tới, mặt hàng, trạng thái
+    - Filter theo kỳ + chi nhánh
+    """
+    try:
+        active     = get_active_branch()
+        accessible = get_accessible_branches()
+
+        # ── Filter bar ──
+        col_ky, col_cn = st.columns([2, 2])
+        with col_ky:
+            ky = st.selectbox("Kỳ:", ["Tháng này","Tháng trước","Tất cả"],
+                key="ck_ky", label_visibility="collapsed")
+        with col_cn:
+            if is_ke_toan_or_admin() and len(accessible) > 1:
+                cn_filter = st.selectbox("Chi nhánh:", ["Tất cả"] + accessible,
+                    key="ck_cn", label_visibility="collapsed")
+            else:
+                cn_filter = active
+                st.caption(f"📍 {active}")
+
+        # Load data
+        view_cns = tuple(accessible) if is_ke_toan_or_admin() else (active,)
+        df = load_phieu_chuyen_kho(branches_key=view_cns)
+
+        if df.empty:
+            st.info("Chưa có dữ liệu chuyển hàng. Vào Quản trị → Upload để tải lên.")
+            return
+
+        # ── Apply filters ──
+        today      = datetime.now().date()
+        first_month = today.replace(day=1)
+        first_last  = (first_month - timedelta(days=1)).replace(day=1)
+
+        if ky == "Tháng này":
+            df = df[df["_date"] >= first_month]
+        elif ky == "Tháng trước":
+            last_end = first_month - timedelta(days=1)
+            df = df[(df["_date"] >= first_last) & (df["_date"] <= last_end)]
+
+        if cn_filter != "Tất cả":
+            df = df[(df["tu_chi_nhanh"] == cn_filter) | (df["toi_chi_nhanh"] == cn_filter)]
+
+        if df.empty:
+            st.info("Không có phiếu trong kỳ này.")
+            return
+
+        # ── Summary ──
+        # Lấy 1 dòng đại diện mỗi phiếu để tính tổng
+        phieu_df = df.drop_duplicates(subset=["ma_phieu"], keep="first")
+        tong_giatri = phieu_df["tong_gia_tri"].sum()
+        so_phieu    = len(phieu_df)
+
+        c_sum1, c_sum2 = st.columns(2)
+        with c_sum1:
+            st.metric("Tổng giá trị chuyển",
+                f"{tong_giatri/1_000_000:.1f} tr đ" if tong_giatri >= 1_000_000
+                else f"{tong_giatri:,} đ")
+        with c_sum2:
+            st.metric("Số phiếu", str(so_phieu))
+
+        st.markdown("---")
+
+        # ── Group by date, render phiếu ──
+        dates = sorted(df["_date"].dropna().unique(), reverse=True)
+
+        for dt in dates:
+            df_day = df[df["_date"] == dt]
+            phieu_day = df_day["ma_phieu"].unique()
+
+            # Date header
+            today_dt = datetime.now().date()
+            yest     = today_dt - timedelta(days=1)
+            if dt == today_dt:   day_lbl = "HÔM NAY"
+            elif dt == yest:     day_lbl = "HÔM QUA"
+            else:
+                try:
+                    weekday = ["THỨ HAI","THỨ BA","THỨ TƯ","THỨ NĂM",
+                               "THỨ SÁU","THỨ BẢY","CHỦ NHẬT"][dt.weekday()]
+                    day_lbl = f"{weekday}, {dt.strftime('%d/%m/%Y')}"
+                except Exception:
+                    day_lbl = dt.strftime("%d/%m/%Y")
+
+            st.markdown(
+                f"<div style='font-size:0.72rem;font-weight:700;color:#aaa;"
+                f"letter-spacing:1px;margin:12px 0 6px;'>{day_lbl}</div>",
+                unsafe_allow_html=True)
+
+            # Render từng phiếu trong ngày
+            for ma_phieu in phieu_day:
+                df_phieu = df_day[df_day["ma_phieu"] == ma_phieu]
+                row_h    = df_phieu.iloc[0]  # header info từ dòng đầu
+
+                tu_cn   = row_h.get("tu_chi_nhanh","")
+                toi_cn  = row_h.get("toi_chi_nhanh","")
+                loai    = row_h.get("loai_phieu","")
+                tt      = row_h.get("trang_thai","")
+                tsl     = int(row_h.get("tong_sl_chuyen", 0) or 0)
+                tmat    = int(row_h.get("tong_mat_hang", 0) or 0)
+                tgiatri = int(row_h.get("tong_gia_tri", 0) or 0)
+                ngay_str = ""
+                try:
+                    ngay_str = pd.Timestamp(row_h["ngay_chuyen"]).strftime("%d/%m %H:%M")
+                except Exception:
+                    pass
+
+                # Màu trạng thái
+                tt_color = "#1a7f37" if tt == "Đã nhận" else "#aaa"
+                tt_bg    = "#f0faf4" if tt == "Đã nhận" else "#f5f5f5"
+
+                # Tóm tắt hàng hóa (tối đa 3 mặt hàng)
+                hang_list = df_phieu[["ten_hang","so_luong_chuyen"]].dropna().head(3)
+                hang_str  = ", ".join(
+                    f"{r['ten_hang']} <b>x{int(r['so_luong_chuyen'])}</b>"
+                    for _, r in hang_list.iterrows()
+                )
+                if len(df_phieu) > 3:
+                    hang_str += f" <span style='color:#aaa;'>+{len(df_phieu)-3} khác</span>"
+
+                # Card phiếu
+                with st.expander(
+                    f"{tmat} mặt hàng · SL: {tsl}   —   "
+                    f"{tgiatri/1_000_000:.2f} tr đ",
+                    expanded=False
+                ):
+                    # Header trong expander
+                    col_info, col_status = st.columns([4, 1])
+                    with col_info:
+                        tu_color  = "#2E86DE"
+                        toi_color = "#27AE60"
+                        st.markdown(
+                            f"<div style='font-size:0.88rem;'>"
+                            f"Từ <span style='color:{tu_color};font-weight:600;'>{tu_cn}</span>"
+                            f" → Đến <span style='color:{toi_color};font-weight:600;'>{toi_cn}</span>"
+                            f"</div>"
+                            f"<div style='font-size:0.78rem;color:#888;margin-top:3px;'>"
+                            f"{ngay_str} · {ma_phieu}</div>",
+                            unsafe_allow_html=True)
+                    with col_status:
+                        st.markdown(
+                            f"<div style='text-align:right;margin-top:4px;'>"
+                            f"<span style='background:{tt_bg};color:{tt_color};"
+                            f"padding:3px 10px;border-radius:20px;font-size:0.75rem;"
+                            f"font-weight:600;'>{tt}</span></div>",
+                            unsafe_allow_html=True)
+
+                    st.markdown(
+                        f"<div style='font-size:0.82rem;color:#444;margin:8px 0 4px;'>"
+                        f"{hang_str}</div>",
+                        unsafe_allow_html=True)
+
+                    # Bảng chi tiết hàng hóa
+                    cols_detail = ["ten_hang","ma_hang","so_luong_chuyen","so_luong_nhan"]
+                    cols_avail  = [c for c in cols_detail if c in df_phieu.columns]
+                    dv = df_phieu[cols_avail].copy()
+                    dv = dv.rename(columns={
+                        "ten_hang":"Tên hàng","ma_hang":"Mã hàng",
+                        "so_luong_chuyen":"SL chuyển","so_luong_nhan":"SL nhận"})
+                    st.dataframe(dv, use_container_width=True, hide_index=True,
+                                 height=min(200, 42 + len(dv)*35))
+
+    except Exception as e:
+        st.error(f"Lỗi tải Chuyển hàng: {e}")
+
+
+# ==========================================
 # MODULE: QUẢN TRỊ
 # ==========================================
 
@@ -970,7 +1169,7 @@ def module_quan_tri():
         hien_thi_dashboard(show_filter=False)
 
     with tab_up:
-        s1, s2, s3 = st.tabs(["Hàng hóa (master)","Thẻ kho","Hóa đơn"])
+        s1, s2, s3, s4 = st.tabs(["Hàng hóa (master)","Thẻ kho","Hóa đơn","Chuyển kho"])
 
         with s1:
             st.caption("File **Danh sách sản phẩm** từ KiotViet (.xlsx) — upload một lần, cập nhật khi có sản phẩm mới.")
@@ -1132,6 +1331,102 @@ def module_quan_tri():
                                     st.success(f"Upload {ok} dòng thành công!"); st.cache_data.clear()
                 except Exception as e: st.error(f"Lỗi: {e}")
 
+        with s4:
+            st.caption("File **Danh sách chi tiết chuyển hàng** từ KiotViet (.xlsx)")
+            up = st.file_uploader("Chọn file:", type=["xlsx","xls"], key="up_ck")
+            if up:
+                try:
+                    df = pd.read_excel(up)
+                    st.success(f"Đọc được {len(df)} dòng — {df['Mã chuyển hàng'].nunique()} phiếu")
+                    miss = [c for c in ["Mã chuyển hàng","Từ chi nhánh","Tới chi nhánh"] if c not in df.columns]
+                    if miss:
+                        st.error(f"Thiếu cột: {', '.join(miss)}")
+                    else:
+                        st.info(f"Từ {df['Ngày chuyển'].min()} đến {df['Ngày chuyển'].max()}")
+                        with st.expander("Xem trước"):
+                            st.dataframe(df.head(), use_container_width=True, hide_index=True)
+
+                        if st.button("Upload Chuyển kho", key="btn_up_ck", type="primary"):
+                            with st.spinner("Đang xử lý..."):
+                                col_map = {
+                                    "Mã chuyển hàng":    "ma_phieu",
+                                    "Loại phiếu":        "loai_phieu",
+                                    "Từ chi nhánh":      "tu_chi_nhanh",
+                                    "Tới chi nhánh":     "toi_chi_nhanh",
+                                    "Ngày chuyển":       "ngay_chuyen",
+                                    "Ngày nhận":         "ngay_nhan",
+                                    "Người tạo":         "nguoi_tao",
+                                    "Ghi chú chuyển":    "ghi_chu_chuyen",
+                                    "Ghi chú nhận":      "ghi_chu_nhan",
+                                    "Tổng SL chuyển":    "tong_sl_chuyen",
+                                    "Tổng SL nhận":      "tong_sl_nhan",
+                                    "Tổng giá trị chuyển":"tong_gia_tri",
+                                    "Tổng số mặt hàng":  "tong_mat_hang",
+                                    "Trạng thái":        "trang_thai",
+                                    "Mã hàng":           "ma_hang",
+                                    "Mã vạch":           "ma_vach",
+                                    "Tên hàng":          "ten_hang",
+                                    "Thương hiệu":       "thuong_hieu",
+                                    "Số lượng chuyển":   "so_luong_chuyen",
+                                    "Số lượng nhận":     "so_luong_nhan",
+                                    "Giá chuyển/nhận":   "gia_chuyen",
+                                    "Thành tiền chuyển": "thanh_tien_chuyen",
+                                    "Thành tiền nhận":   "thanh_tien_nhan",
+                                }
+                                avail = {k:v for k,v in col_map.items() if k in df.columns}
+                                df_out = df[list(avail.keys())].rename(columns=avail).copy()
+
+                                # Clean text
+                                for col in df_out.select_dtypes(include="object").columns:
+                                    df_out[col] = df_out[col].astype(str).str.strip()
+                                    df_out.loc[df_out[col]=="nan", col] = None
+
+                                # Numeric
+                                int_cols = ["tong_sl_chuyen","tong_sl_nhan","tong_mat_hang",
+                                            "so_luong_chuyen","so_luong_nhan",
+                                            "gia_chuyen","thanh_tien_chuyen","thanh_tien_nhan",
+                                            "tong_gia_tri"]
+                                for col in int_cols:
+                                    if col in df_out.columns:
+                                        df_out[col] = pd.to_numeric(df_out[col], errors="coerce").fillna(0).astype(int)
+
+                                # Datetime → ISO string
+                                for col in ["ngay_chuyen","ngay_nhan"]:
+                                    if col in df_out.columns:
+                                        df_out[col] = pd.to_datetime(df_out[col], errors="coerce")
+                                        df_out[col] = df_out[col].apply(
+                                            lambda x: x.isoformat() if pd.notna(x) else None)
+
+                                def _clean(v):
+                                    if v is None: return None
+                                    try:
+                                        if pd.isna(v): return None
+                                    except Exception: pass
+                                    if isinstance(v, np.integer):  return int(v)
+                                    if isinstance(v, np.floating):
+                                        return None if np.isnan(v) else float(v)
+                                    return v
+
+                                records = [{k: _clean(v) for k,v in row.items()}
+                                           for row in df_out.to_dict(orient="records")]
+
+                                total, ok = len(records), 0
+                                prog = st.progress(0, text="Đang upload...")
+                                for i in range(0, total, 500):
+                                    try:
+                                        supabase.table("phieu_chuyen_kho").insert(
+                                            records[i:i+500]).execute()
+                                        ok += len(records[i:i+500])
+                                        prog.progress(min(ok/total,1.0), text=f"{ok}/{total}...")
+                                    except Exception as e:
+                                        st.error(f"Batch {i}: {e}")
+                                prog.empty()
+                                if ok == total:
+                                    st.success(f"✅ Upload {ok} dòng ({df['Mã chuyển hàng'].nunique()} phiếu)!")
+                                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"Lỗi: {e}")
+
     with tab_del:
         st.caption("Xóa dữ liệu cũ trước khi upload lại.")
         c1,c2 = st.columns(2)
@@ -1188,7 +1483,7 @@ role_lbl  = {"admin":"Admin","ke_toan":"Kế toán","nhan_vien":"Nhân viên"}.g
     user.get("role",""), "")
 
 # ── Hàng 1: menu nav (toàn chiều rộng) ──
-menu = ["📊 Tổng quan", "🧾 Hóa đơn", "📦 Hàng hóa"]
+menu = ["📊 Tổng quan", "🧾 Hóa đơn", "📦 Hàng hóa", "🔄 Chuyển hàng"]
 if is_admin(): menu.append("⚙️ Quản trị")
 page = st.radio("nav", menu, horizontal=True, label_visibility="collapsed")
 
@@ -1231,7 +1526,8 @@ with col_avatar:
 page_clean = page.split(" ", 1)[1] if " " in page else page
 st.markdown("<hr style='margin:4px 0 10px 0;'>", unsafe_allow_html=True)
 
-if page_clean == "Tổng quan":   module_tong_quan()
-elif page_clean == "Hóa đơn":   module_hoa_don()
-elif page_clean == "Hàng hóa":  module_hang_hoa()
-elif page_clean == "Quản trị":  module_quan_tri()
+if page_clean == "Tổng quan":     module_tong_quan()
+elif page_clean == "Hóa đơn":     module_hoa_don()
+elif page_clean == "Hàng hóa":    module_hang_hoa()
+elif page_clean == "Chuyển hàng": module_chuyen_hang()
+elif page_clean == "Quản trị":    module_quan_tri()
