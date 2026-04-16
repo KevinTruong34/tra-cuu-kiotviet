@@ -8,28 +8,81 @@ import bcrypt
 import uuid
 
 # ==========================================
-# PHIEN BAN: 12.1 — Fix branch selection
+# PHIEN BAN: 13.1 — Hang hoa + Mobile UI
 # ==========================================
 
-st.set_page_config(page_title="Hệ thống Watch Store", layout="wide")
+st.set_page_config(page_title="Watch Store", layout="wide")
 
 st.markdown("""
-    <style>
-    header {visibility: hidden !important;}
-    footer {visibility: hidden !important;}
-    #stDecoration {display:none !important;}
-    .stAppDeployButton {display:none !important;}
-    [data-testid="stHeader"] {display: none !important;}
-    [data-testid="stToolbar"] {display: none !important;}
-    .block-container {padding-top: 1rem !important; padding-bottom: 0rem !important;}
-    [data-testid="stMetricValue"] {font-size: 1.4rem !important;}
-    [data-testid="stMetricLabel"] {font-size: 0.9rem !important; color: gray;}
-    [data-testid="stElementToolbar"] {display: none !important;}
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+/* ── Ẩn chrome mặc định của Streamlit ── */
+header, footer, #stDecoration,
+.stAppDeployButton,
+[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stElementToolbar"] { display: none !important; }
+
+/* ── Layout ── */
+.block-container { padding: 0.75rem 1rem 1rem 1rem !important; }
+
+/* ── Metric ── */
+[data-testid="stMetricValue"] { font-size: 1.3rem !important; }
+[data-testid="stMetricLabel"] { font-size: 0.82rem !important; color: #666; }
+
+/* ── Bảng hàng hóa ── */
+.hang-hoa-row {
+    padding: 10px 12px;
+    border-bottom: 1px solid #f0f0f0;
+    cursor: pointer;
+    font-size: 0.9rem;
+    line-height: 1.4;
+}
+.hang-hoa-row:hover { background: #fafafa; }
+.ma-hang  { color: #666; font-size: 0.78rem; }
+.ten-hang { font-weight: 600; color: #222; }
+.nhom-hang-tag {
+    display: inline-block;
+    background: #f0f4ff;
+    color: #4a6fa5;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 0.72rem;
+    margin-top: 2px;
+}
+.ton-kho-badge {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #1a7f37;
+    text-align: right;
+}
+.ton-kho-badge.low { color: #cf4c2c; }
+.ton-kho-badge.zero { color: #999; }
+
+/* ── Nav pills ── */
+div[data-testid="stHorizontalBlock"] > div > div[data-testid="stRadio"] label {
+    font-size: 0.88rem;
+}
+
+/* ── Mobile responsive ── */
+@media (max-width: 640px) {
+    .block-container { padding: 0.5rem !important; }
+    [data-testid="stMetricValue"] { font-size: 1.1rem !important; }
+}
+
+/* ── Input search lớn hơn ── */
+[data-testid="stTextInput"] input {
+    font-size: 1rem !important;
+    padding: 0.5rem 0.75rem !important;
+}
+
+/* ── Ẩn label "Phân hệ" ── */
+[data-testid="stRadio"] > label:first-child { display: none; }
+</style>
+""", unsafe_allow_html=True)
+
 
 # ==========================================
-# SUPABASE INIT
+# SUPABASE
 # ==========================================
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -40,186 +93,140 @@ except Exception:
     st.stop()
 
 ALL_BRANCHES = ["100 Lê Quý Đôn", "Coop Vũng Tàu", "GO BÀ RỊA"]
-CN_ICON = {
-    "100 Lê Quý Đôn": "🏪",
-    "Coop Vũng Tàu":  "🛒",
-    "GO BÀ RỊA":      "🏬",
+CN_SHORT = {
+    "100 Lê Quý Đôn": "Lê Quý Đôn",
+    "Coop Vũng Tàu":  "Coop VT",
+    "GO BÀ RỊA":      "GO Bà Rịa",
 }
 
 
 # ==========================================
-# AUTH HELPERS
+# AUTH
 # ==========================================
 
-def verify_password(plain: str, hashed: str) -> bool:
+def verify_password(plain, hashed):
     try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
     except Exception:
         return False
 
-def hash_password(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+def hash_password(plain):
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
-def create_session_token(nhan_vien_id: int) -> str:
+def create_session_token(nv_id):
     token = str(uuid.uuid4())
-    expires_at = (datetime.utcnow() + timedelta(days=30)).isoformat()
     supabase.table("sessions").insert({
         "token": token,
-        "nhan_vien_id": nhan_vien_id,
-        "expires_at": expires_at
+        "nhan_vien_id": nv_id,
+        "expires_at": (datetime.utcnow() + timedelta(days=30)).isoformat()
     }).execute()
     return token
 
-def delete_session(token: str):
+def delete_session(token):
     supabase.table("sessions").delete().eq("token", token).execute()
 
-def load_nhan_vien_by_id(nv_id: int):
+def load_user_by_id(nv_id):
     res = supabase.table("nhan_vien").select("*").eq("id", nv_id).eq("active", True).execute()
     if not res.data:
         return None
-    user = res.data[0]
-    user.pop("mat_khau", None)
-    cn_res = supabase.table("nhan_vien_chi_nhanh") \
-        .select("chi_nhanh_id, chi_nhanh(ten)") \
-        .eq("nhan_vien_id", nv_id).execute()
-    user["chi_nhanh_list"] = [x["chi_nhanh"]["ten"] for x in cn_res.data] if cn_res.data else []
-    return user
+    u = res.data[0]; u.pop("mat_khau", None)
+    cn = supabase.table("nhan_vien_chi_nhanh") \
+        .select("chi_nhanh(ten)").eq("nhan_vien_id", nv_id).execute()
+    u["chi_nhanh_list"] = [x["chi_nhanh"]["ten"] for x in cn.data] if cn.data else []
+    return u
 
-def restore_session_from_token(token: str):
+def restore_session(token):
     try:
-        res = supabase.table("sessions") \
-            .select("nhan_vien_id, expires_at").eq("token", token).execute()
-        if not res.data:
-            return None
-        sess = res.data[0]
-        expires = datetime.fromisoformat(sess["expires_at"].replace("Z", "+00:00"))
-        if expires.replace(tzinfo=None) < datetime.utcnow():
-            delete_session(token)
-            return None
-        return load_nhan_vien_by_id(sess["nhan_vien_id"])
+        res = supabase.table("sessions").select("nhan_vien_id,expires_at").eq("token", token).execute()
+        if not res.data: return None
+        s = res.data[0]
+        if datetime.fromisoformat(s["expires_at"].replace("Z","+00:00")).replace(tzinfo=None) < datetime.utcnow():
+            delete_session(token); return None
+        return load_user_by_id(s["nhan_vien_id"])
     except Exception:
         return None
 
-def do_login(username: str, password: str):
+def do_login(username, password):
     try:
-        res = supabase.table("nhan_vien") \
-            .select("*").eq("username", username).eq("active", True).execute()
-        if not res.data:
-            return None, "Tài khoản không tồn tại hoặc đã bị khóa."
-        user = res.data[0]
-        if not verify_password(password, user["mat_khau"]):
-            return None, "Mật khẩu không chính xác."
-        user.pop("mat_khau", None)
-        cn_res = supabase.table("nhan_vien_chi_nhanh") \
-            .select("chi_nhanh_id, chi_nhanh(ten)") \
-            .eq("nhan_vien_id", user["id"]).execute()
-        user["chi_nhanh_list"] = [x["chi_nhanh"]["ten"] for x in cn_res.data] if cn_res.data else []
-        return user, None
+        res = supabase.table("nhan_vien").select("*").eq("username", username).eq("active", True).execute()
+        if not res.data: return None, "Tài khoản không tồn tại hoặc đã bị khóa."
+        u = res.data[0]
+        if not verify_password(password, u["mat_khau"]): return None, "Mật khẩu không chính xác."
+        u.pop("mat_khau", None)
+        cn = supabase.table("nhan_vien_chi_nhanh") \
+            .select("chi_nhanh(ten)").eq("nhan_vien_id", u["id"]).execute()
+        u["chi_nhanh_list"] = [x["chi_nhanh"]["ten"] for x in cn.data] if cn.data else []
+        return u, None
     except Exception as e:
         return None, f"Lỗi hệ thống: {e}"
 
 def do_logout():
     token = st.query_params.get("token")
-    if token:
-        delete_session(token)
-    st.session_state.clear()
-    st.query_params.clear()
+    if token: delete_session(token)
+    st.session_state.clear(); st.query_params.clear()
 
 
 # ==========================================
 # SESSION HELPERS
 # ==========================================
 
-def get_user():
-    return st.session_state.get("user")
+def get_user(): return st.session_state.get("user")
+def is_admin(): u = get_user(); return u and u.get("role") == "admin"
+def is_ke_toan_or_admin(): u = get_user(); return u and u.get("role") in ("admin","ke_toan")
+def get_active_branch(): return st.session_state.get("active_chi_nhanh","")
 
-def is_admin():
+def get_accessible_branches():
     u = get_user()
-    return u and u.get("role") == "admin"
+    if not u: return []
+    return ALL_BRANCHES if u.get("role") == "admin" else u.get("chi_nhanh_list", [])
 
-def is_ke_toan_or_admin():
-    u = get_user()
-    return u and u.get("role") in ("admin", "ke_toan")
-
-def get_active_branch() -> str:
-    """Chi nhánh đang làm việc — luôn là 1 chi nhánh cụ thể."""
-    return st.session_state.get("active_chi_nhanh", "")
-
-def get_active_branch_as_filter() -> tuple:
-    """Tuple dùng cho cache key — chỉ active branch."""
-    b = get_active_branch()
-    return (b,) if b else ()
-
-def get_user_accessible_branches() -> list:
-    """Toàn bộ chi nhánh user được phép truy cập (dùng cho báo cáo)."""
-    u = get_user()
-    if not u:
-        return []
-    if u.get("role") == "admin":
-        return ALL_BRANCHES
-    return u.get("chi_nhanh_list", [])
-
-def get_selectable_branches() -> list:
-    """Chi nhánh user có thể chọn làm việc — KHÔNG có 'Tất cả'."""
-    return get_user_accessible_branches()
+def get_selectable_branches():
+    return get_accessible_branches()
 
 
 # ==========================================
-# FIRST RUN SETUP
+# FIRST RUN
 # ==========================================
 
-def is_first_run() -> bool:
+def is_first_run():
     try:
-        res = supabase.table("nhan_vien").select("id", count="exact").execute()
-        return (res.count or 0) == 0
-    except Exception:
-        return False
+        return (supabase.table("nhan_vien").select("id",count="exact").execute().count or 0) == 0
+    except: return False
 
 def show_first_run():
-    st.title("🛠️ Khởi tạo hệ thống lần đầu")
-    st.info("Chưa có tài khoản nào. Tạo tài khoản **Admin** để bắt đầu.")
-    with st.form("form_setup"):
-        username = st.text_input("Username:")
-        ho_ten   = st.text_input("Họ tên:")
-        pwd      = st.text_input("Mật khẩu:", type="password")
-        pwd2     = st.text_input("Xác nhận mật khẩu:", type="password")
-        if st.form_submit_button("🚀 Tạo tài khoản Admin", type="primary"):
-            if not all([username, ho_ten, pwd, pwd2]):
-                st.error("Điền đầy đủ thông tin.")
-            elif pwd != pwd2:
-                st.error("Mật khẩu không khớp.")
-            elif len(pwd) < 6:
-                st.error("Tối thiểu 6 ký tự.")
+    st.title("Khởi tạo hệ thống")
+    st.info("Chưa có tài khoản nào. Tạo tài khoản Admin để bắt đầu.")
+    with st.form("setup"):
+        u = st.text_input("Username:"); n = st.text_input("Họ tên:")
+        p = st.text_input("Mật khẩu:", type="password")
+        p2 = st.text_input("Xác nhận:", type="password")
+        if st.form_submit_button("Tạo tài khoản Admin", type="primary"):
+            if not all([u,n,p,p2]): st.error("Điền đầy đủ.")
+            elif p != p2: st.error("Mật khẩu không khớp.")
+            elif len(p) < 6: st.error("Tối thiểu 6 ký tự.")
             else:
                 try:
                     supabase.table("nhan_vien").insert({
-                        "username": username, "ho_ten": ho_ten,
-                        "mat_khau": hash_password(pwd),
-                        "role": "admin", "active": True,
+                        "username":u,"ho_ten":n,"mat_khau":hash_password(p),"role":"admin","active":True
                     }).execute()
-                    st.success(f"✅ Tạo tài khoản **{ho_ten}** thành công!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Lỗi: {e}")
-
+                    st.success("Tạo thành công! Hãy đăng nhập."); st.rerun()
+                except Exception as e: st.error(f"Lỗi: {e}")
 
 # ==========================================
-# LOGIN PAGE
+# LOGIN
 # ==========================================
 
 def show_login():
-    st.title("🔐 Đăng nhập hệ thống")
-    with st.form("login_form"):
-        username = st.text_input("Tài khoản:")
-        password = st.text_input("Mật khẩu:", type="password")
+    st.title("Đăng nhập")
+    with st.form("login"):
+        u = st.text_input("Tài khoản:")
+        p = st.text_input("Mật khẩu:", type="password")
         if st.form_submit_button("Đăng nhập", type="primary", use_container_width=True):
-            if not username or not password:
-                st.error("Nhập đầy đủ tài khoản và mật khẩu.")
+            if not u or not p: st.error("Nhập đầy đủ.")
             else:
                 with st.spinner("Đang xác thực..."):
-                    user, err = do_login(username, password)
-                if err:
-                    st.error(err)
+                    user, err = do_login(u, p)
+                if err: st.error(err)
                 else:
                     token = create_session_token(user["id"])
                     st.session_state["user"] = user
@@ -228,50 +235,43 @@ def show_login():
 
 
 # ==========================================
-# BRANCH SELECTION SCREEN
+# BRANCH SELECTION
 # ==========================================
 
 def show_branch_selection():
     user     = get_user()
     branches = get_selectable_branches()
 
-    # Chỉ 1 chi nhánh → tự động vào luôn, không cần chọn
     if len(branches) == 1:
         st.session_state["active_chi_nhanh"] = branches[0]
-        st.rerun()
-        return
+        st.rerun(); return
 
-    st.markdown(f"## 👋 Xin chào, **{user.get('ho_ten', '')}**!")
-    st.markdown("### Bạn đang làm việc tại chi nhánh nào?")
-    st.caption("Chọn chi nhánh để bắt đầu ca làm việc. Có thể đổi bất cứ lúc nào.")
+    st.markdown(f"### Xin chào, **{user.get('ho_ten','')}**!")
+    st.markdown("Bạn đang làm việc tại chi nhánh nào?")
     st.markdown("<br>", unsafe_allow_html=True)
 
     cols = st.columns(len(branches))
     for i, branch in enumerate(branches):
-        icon = CN_ICON.get(branch, "🏪")
         with cols[i]:
             st.markdown(f"""
-                <div style="
-                    border: 2px solid #e0e0e0; border-radius: 16px;
-                    padding: 28px 16px 12px 16px; text-align: center;
-                    margin-bottom: 10px; background: #fafafa;
-                ">
-                    <div style="font-size: 3rem;">{icon}</div>
-                    <div style="font-size: 1rem; font-weight: 600;
-                         margin-top: 10px; color: #333; line-height: 1.4;">
+                <div style="border:1px solid #ddd;border-radius:12px;
+                    padding:24px 16px 8px;text-align:center;background:#fff;
+                    margin-bottom:10px;">
+                    <div style="font-size:1rem;font-weight:600;color:#222;">
                         {branch}
+                    </div>
+                    <div style="font-size:0.8rem;color:#888;margin-top:4px;">
+                        {CN_SHORT.get(branch,'')}
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-            if st.button("Chọn chi nhánh này", key=f"sel_cn_{i}",
-                         use_container_width=True, type="primary"):
+            if st.button("Chọn", key=f"sel_{i}", use_container_width=True, type="primary"):
                 st.session_state["active_chi_nhanh"] = branch
                 st.rerun()
 
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    if st.button("🚪 Đăng xuất"):
-        do_logout()
-        st.rerun()
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("Đăng xuất"):
+        do_logout(); st.rerun()
 
 
 # ==========================================
@@ -281,26 +281,16 @@ def show_branch_selection():
 if "user" not in st.session_state:
     token = st.query_params.get("token")
     if token:
-        user = restore_session_from_token(token)
-        if user:
-            st.session_state["user"] = user
-        else:
-            st.query_params.clear()
-
-# ==========================================
-# ROUTING: FIRST RUN → LOGIN → BRANCH → APP
-# ==========================================
+        user = restore_session(token)
+        if user: st.session_state["user"] = user
+        else: st.query_params.clear()
 
 if "user" not in st.session_state:
-    if is_first_run():
-        show_first_run()
-    else:
-        show_login()
+    show_first_run() if is_first_run() else show_login()
     st.stop()
 
 if "active_chi_nhanh" not in st.session_state:
-    show_branch_selection()
-    st.stop()
+    show_branch_selection(); st.stop()
 
 
 # ==========================================
@@ -309,25 +299,20 @@ if "active_chi_nhanh" not in st.session_state:
 
 @st.cache_data(ttl=300)
 def load_hoa_don(branches_key: tuple):
-    all_rows = []
-    batch, offset = 1000, 0
+    rows, batch, offset = [], 1000, 0
     while True:
-        q = supabase.table("hoa_don").select("*").in_("Chi nhánh", list(branches_key))
-        res = q.range(offset, offset + batch - 1).execute()
-        rows = res.data
-        if not rows:
-            break
-        all_rows.extend(rows)
-        if len(rows) < batch:
-            break
+        res = supabase.table("hoa_don").select("*") \
+            .in_("Chi nhánh", list(branches_key)) \
+            .range(offset, offset+batch-1).execute()
+        if not res.data: break
+        rows.extend(res.data)
+        if len(res.data) < batch: break
         offset += batch
-    if not all_rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(all_rows)
-    tong = len(df)
-    df = df.drop_duplicates()
+    if not rows: return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    tong = len(df); df = df.drop_duplicates()
     st.session_state["so_dong_trung"] = tong - len(df)
-    for col in ["Tổng tiền hàng", "Khách cần trả", "Khách đã trả", "Đơn giá", "Thành tiền"]:
+    for col in ["Tổng tiền hàng","Khách cần trả","Khách đã trả","Đơn giá","Thành tiền"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     if "Thời gian" in df.columns:
@@ -339,621 +324,596 @@ def load_hoa_don(branches_key: tuple):
 
 @st.cache_data(ttl=300)
 def load_the_kho(branches_key: tuple):
-    all_rows = []
-    batch, offset = 1000, 0
+    rows, batch, offset = [], 1000, 0
     while True:
-        q = supabase.table("the_kho").select("*").in_("Chi nhánh", list(branches_key))
-        res = q.range(offset, offset + batch - 1).execute()
-        rows = res.data
-        if not rows:
-            break
-        all_rows.extend(rows)
-        if len(rows) < batch:
-            break
+        res = supabase.table("the_kho").select("*") \
+            .in_("Chi nhánh", list(branches_key)) \
+            .range(offset, offset+batch-1).execute()
+        if not res.data: break
+        rows.extend(res.data)
+        if len(res.data) < batch: break
         offset += batch
-    if not all_rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(all_rows)
-    for col in ["Tồn đầu kì", "Giá trị đầu kì", "Nhập NCC", "Giá trị nhập NCC",
-                "Xuất bán", "Giá trị xuất bán", "Tồn cuối kì", "Giá trị cuối kì"]:
+    if not rows: return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    for col in ["Tồn đầu kì","Giá trị đầu kì","Nhập NCC","Giá trị nhập NCC",
+                "Xuất bán","Giá trị xuất bán","Tồn cuối kì","Giá trị cuối kì"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     return df
 
 
 # ==========================================
-# MODULE 0: TỔNG QUAN
+# MODULE: TỔNG QUAN
 # ==========================================
 
 def module_tong_quan():
     user   = get_user()
     active = get_active_branch()
-    icon   = CN_ICON.get(active, "🏪")
-    role_label = {
-        "admin":    "👑 Admin",
-        "ke_toan":  "📊 Kế toán",
-        "nhan_vien":"👤 Nhân viên"
-    }.get(user.get("role"), "")
-    st.markdown(f"### 👋 Xin chào, **{user.get('ho_ten', '')}**!")
-    st.caption(f"{role_label}   |   {icon} Đang tại: **{active}**")
+    role_label = {"admin":"Admin","ke_toan":"Kế toán","nhan_vien":"Nhân viên"}.get(user.get("role"),"")
+    st.markdown(f"**{user.get('ho_ten','')}** · {role_label} · {active}")
     st.markdown("---")
     if is_ke_toan_or_admin():
         hien_thi_dashboard()
     else:
-        st.info("🚧 Trang tổng quan nhân viên đang phát triển.")
+        st.info("Trang tổng quan nhân viên đang phát triển.")
 
 
 # ==========================================
-# DASHBOARD DOANH SỐ
+# DASHBOARD
 # ==========================================
 
 def hien_thi_dashboard():
-    """
-    Dashboard có 2 lớp filter:
-    - nhan_vien: chỉ thấy active branch, không có filter
-    - ke_toan / admin: có thêm bộ lọc chi nhánh bên trong báo cáo
-      (tách biệt với active_chi_nhanh — đây là filter báo cáo, không phải context làm việc)
-    """
-    accessible = get_user_accessible_branches()
-
-    # ── Bộ lọc chi nhánh báo cáo (chỉ ke_toan/admin mới thấy) ──
+    accessible = get_accessible_branches()
     if is_ke_toan_or_admin() and len(accessible) > 1:
-        st.caption("📊 Báo cáo — bạn có thể xem nhiều chi nhánh cùng lúc")
         report_branches = st.multiselect(
-            "Chi nhánh trong báo cáo:",
-            options=accessible,
-            default=accessible,
-            key="dashboard_cn_filter",
-            label_visibility="collapsed"
-        )
+            "Chi nhánh báo cáo:", accessible, default=accessible, key="db_cn")
         if not report_branches:
-            st.warning("Chọn ít nhất một chi nhánh.")
-            return
+            st.warning("Chọn ít nhất một chi nhánh."); return
     else:
-        # nhan_vien hoặc chỉ có 1 chi nhánh → chỉ thấy active branch
         report_branches = [get_active_branch()]
 
     try:
         raw = load_hoa_don(branches_key=tuple(report_branches))
         if raw.empty or "_date" not in raw.columns:
-            st.info("💡 Chưa có dữ liệu hóa đơn.")
-            return
+            st.info("Chưa có dữ liệu hóa đơn."); return
 
-        today         = datetime.now().date()
-        yesterday     = today - timedelta(days=1)
-        first_month   = today.replace(day=1)
-        first_last    = (first_month - timedelta(days=1)).replace(day=1)
-        last_last     = first_month - timedelta(days=1)
+        today       = datetime.now().date()
+        yesterday   = today - timedelta(1)
+        first_month = today.replace(day=1)
+        first_last  = (first_month - timedelta(1)).replace(day=1)
+        last_last   = first_month - timedelta(1)
 
-        col_f, _ = st.columns([2, 3])
-        with col_f:
-            ky = st.selectbox("Kỳ xem:",
-                ["Hôm nay", "Hôm qua", "7 ngày qua", "Tháng này", "Tháng trước"],
-                index=3, label_visibility="collapsed")
+        ky = st.selectbox("Kỳ xem:",
+            ["Hôm nay","Hôm qua","7 ngày qua","Tháng này","Tháng trước"],
+            index=3, label_visibility="collapsed")
 
-        if ky == "Hôm nay":
-            df, dt, cf, ct = today, today, yesterday, yesterday
-            label = "so với hôm qua"
-        elif ky == "Hôm qua":
-            df, dt = yesterday, yesterday
-            cf, ct = yesterday - timedelta(1), yesterday - timedelta(1)
-            label = "so với hôm kia"
-        elif ky == "7 ngày qua":
-            df, dt = today - timedelta(6), today
-            cf, ct = today - timedelta(13), today - timedelta(7)
-            label = "so với 7 ngày trước"
-        elif ky == "Tháng này":
-            df, dt = first_month, today
-            cf = first_last
+        if ky=="Hôm nay":      df,dt,cf,ct,lb = today,today,yesterday,yesterday,"so với hôm qua"
+        elif ky=="Hôm qua":    df,dt,cf,ct,lb = yesterday,yesterday,yesterday-timedelta(1),yesterday-timedelta(1),"so với hôm kia"
+        elif ky=="7 ngày qua": df,dt,cf,ct,lb = today-timedelta(6),today,today-timedelta(13),today-timedelta(7),"so với 7 ngày trước"
+        elif ky=="Tháng này":
+            df,dt,cf = first_month,today,first_last
             try:    ct = first_last.replace(day=today.day)
             except: ct = last_last
-            label = "so với cùng kỳ tháng trước"
+            lb = "so với cùng kỳ tháng trước"
         else:
-            df, dt = first_last, last_last
-            m2f = (first_last - timedelta(1)).replace(day=1)
-            cf, ct = m2f, first_last - timedelta(1)
-            label = "so với tháng trước nữa"
+            df,dt = first_last,last_last
+            m2f = (first_last-timedelta(1)).replace(day=1)
+            cf,ct,lb = m2f,first_last-timedelta(1),"so với tháng trước nữa"
 
-        ht    = raw[raw["Trạng thái"] == "Hoàn thành"].copy()
-        d_ky  = ht[(ht["_date"] >= df)  & (ht["_date"] <= dt)]
-        d_ss  = ht[(ht["_date"] >= cf)  & (ht["_date"] <= ct)]
-        d_td  = ht[ht["_date"] == today]
-        d_ye  = ht[ht["_date"] == yesterday]
+        ht   = raw[raw["Trạng thái"]=="Hoàn thành"].copy()
+        d_ky = ht[(ht["_date"]>=df)&(ht["_date"]<=dt)]
+        d_ss = ht[(ht["_date"]>=cf)&(ht["_date"]<=ct)]
+        d_td = ht[ht["_date"]==today]
+        d_ye = ht[ht["_date"]==yesterday]
 
         def tinh(d):
-            if d.empty: return 0, 0
-            u = d.drop_duplicates(subset=["Mã hóa đơn"], keep="first")
+            if d.empty: return 0,0
+            u = d.drop_duplicates(subset=["Mã hóa đơn"],keep="first")
             return u["Khách đã trả"].sum(), u["Mã hóa đơn"].nunique()
 
-        def pct(a, b):
-            return ((a - b) / b * 100) if b else None
+        def pct(a,b): return ((a-b)/b*100) if b else None
 
-        dt_td, hd_td = tinh(d_td)
-        dt_ye, _     = tinh(d_ye)
-        dt_ky, hd_ky = tinh(d_ky)
-        dt_ss, _     = tinh(d_ss)
-        p_ye = pct(dt_td, dt_ye)
-        p_ss = pct(dt_ky, dt_ss)
+        dt_td,hd_td = tinh(d_td); dt_ye,_ = tinh(d_ye)
+        dt_ky,hd_ky = tinh(d_ky); dt_ss,_ = tinh(d_ss)
+        p_ye = pct(dt_td,dt_ye); p_ss = pct(dt_ky,dt_ss)
 
-        st.markdown("#### Kết quả bán hàng hôm nay")
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.metric("💰 Doanh thu hôm nay", f"{dt_td:,.0f}")
-            st.caption(f"{hd_td} hóa đơn")
-        with m2:
-            st.metric("🔄 Trả hàng", "0")
-        with m3:
-            st.metric("So hôm qua",
-                f"{'↑' if (p_ye or 0) >= 0 else '↓'} {abs(p_ye):.1f}%"
-                if p_ye is not None else "—")
-        with m4:
-            st.metric(label.capitalize(),
-                f"{'↑' if (p_ss or 0) >= 0 else '↓'} {abs(p_ss):.1f}%"
-                if p_ss is not None else "—")
+        st.markdown("#### Hôm nay")
+        m1,m2,m3,m4 = st.columns(4)
+        with m1: st.metric("Doanh thu",f"{dt_td:,.0f}"); st.caption(f"{hd_td} hóa đơn")
+        with m2: st.metric("Trả hàng","0")
+        with m3: st.metric("So hôm qua", f"{'↑' if (p_ye or 0)>=0 else '↓'} {abs(p_ye):.1f}%" if p_ye is not None else "—")
+        with m4: st.metric(lb.capitalize(), f"{'↑' if (p_ss or 0)>=0 else '↓'} {abs(p_ss):.1f}%" if p_ss is not None else "—")
 
-        st.markdown(f"**Doanh thu thuần kỳ này: {dt_ky:,.0f} đ** ({hd_ky} hóa đơn)")
+        st.caption(f"Doanh thu thuần kỳ này: **{dt_ky:,.0f} đ** ({hd_ky} hóa đơn)")
 
         if not d_ky.empty:
-            base  = d_ky.drop_duplicates(subset=["Mã hóa đơn"], keep="first")
-            chart = base.groupby(["_date", "Chi nhánh"])["Khách đã trả"].sum().reset_index()
-            chart.columns = ["Ngày", "Chi nhánh", "Doanh thu"]
-            pivot = chart.pivot_table(
-                index="Ngày", columns="Chi nhánh",
-                values="Doanh thu", fill_value=0
-            ).sort_index()
-
-            cmap = {
-                "100 Lê Quý Đôn": "#2E86DE",
-                "Coop Vũng Tàu":   "#27AE60",
-                "GO BÀ RỊA":       "#F39C12",
-            }
-            fallback = ["#2E86DE", "#27AE60", "#F39C12", "#E74C3C", "#9B59B6"]
-            fig = go.Figure()
-            for i, cn in enumerate(pivot.columns):
+            base  = d_ky.drop_duplicates(subset=["Mã hóa đơn"],keep="first")
+            chart = base.groupby(["_date","Chi nhánh"])["Khách đã trả"].sum().reset_index()
+            chart.columns = ["Ngày","Chi nhánh","Doanh thu"]
+            pivot = chart.pivot_table(index="Ngày",columns="Chi nhánh",values="Doanh thu",fill_value=0).sort_index()
+            cmap  = {"100 Lê Quý Đôn":"#2E86DE","Coop Vũng Tàu":"#27AE60","GO BÀ RỊA":"#F39C12"}
+            fig   = go.Figure()
+            for i,cn in enumerate(pivot.columns):
                 fig.add_trace(go.Bar(
-                    x=[d.strftime("%d") for d in pivot.index],
-                    y=pivot[cn], name=cn,
-                    marker_color=cmap.get(cn, fallback[i % len(fallback)]),
+                    x=[d.strftime("%d") for d in pivot.index], y=pivot[cn], name=CN_SHORT.get(cn,cn),
+                    marker_color=cmap.get(cn,["#2E86DE","#27AE60","#F39C12"][i%3]),
                     hovertemplate=f"{cn}<br>Ngày %{{x}}<br>%{{y:,.0f}} đ<extra></extra>",
                 ))
             fig.update_layout(
-                barmode="stack", height=400,
-                margin=dict(l=0, r=0, t=10, b=0),
-                legend=dict(orientation="h", yanchor="bottom", y=-0.25,
-                            xanchor="center", x=0.5),
-                yaxis=dict(tickformat=",.0f", gridcolor="#eee"),
-                xaxis=dict(title=None, dtick=1),
-                plot_bgcolor="white", font=dict(size=12), dragmode=False,
+                barmode="stack", height=320,
+                margin=dict(l=0,r=0,t=8,b=0),
+                legend=dict(orientation="h",yanchor="bottom",y=-0.3,xanchor="center",x=0.5),
+                yaxis=dict(tickformat=",.0f",gridcolor="#eee"),
+                xaxis=dict(title=None,dtick=1),
+                plot_bgcolor="white", font=dict(size=11), dragmode=False,
             )
             mx = pivot.sum(axis=1).max() if not pivot.empty else 0
             if mx >= 1_000_000:
-                step = max(6_000_000, int(mx / 8) // 1_000_000 * 1_000_000)
-                tvs  = list(range(0, int(mx + step), step))
-                fig.update_layout(yaxis=dict(
-                    tickvals=tvs,
-                    ticktext=[f"{int(v / 1_000_000)} tr" for v in tvs],
-                    gridcolor="#eee"))
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                step = max(6_000_000, int(mx/8)//1_000_000*1_000_000)
+                tvs  = list(range(0,int(mx+step),step))
+                fig.update_layout(yaxis=dict(tickvals=tvs,ticktext=[f"{int(v/1_000_000)}tr" for v in tvs],gridcolor="#eee"))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar":False})
         else:
             st.info("Không có dữ liệu trong kỳ này.")
-
     except Exception as e:
         st.error(f"Lỗi dashboard: {e}")
 
 
 # ==========================================
-# MODULE 1: HÓA ĐƠN
+# MODULE: HÓA ĐƠN
 # ==========================================
 
 def module_hoa_don():
-    def show_invoice(inv_df, code):
+    def render_invoice(inv_df, code):
         row    = inv_df.iloc[0]
-        status = row.get("Trạng thái", "N/A")
-        bg     = "#28a745" if status == "Hoàn thành" else "#dc3545"
-        header = (f"🧾 **{code}** — {row.get('Thời gian', '')} | "
-                  f"**{row.get('Tên khách hàng', 'Khách lẻ')}** "
-                  f"({row.get('Điện thoại', 'N/A')})")
-        with st.expander(header, expanded=True):
+        status = row.get("Trạng thái","N/A")
+        color  = "#1a7f37" if status=="Hoàn thành" else "#cf4c2c"
+        with st.expander(
+            f"{code}  ·  {row.get('Thời gian','')}  ·  {row.get('Tên khách hàng','Khách lẻ')}",
+            expanded=True
+        ):
             st.markdown(
-                f"""<div style="display:flex;justify-content:flex-end;margin-top:-40px;">
-                <span style="background:{bg};color:white;padding:4px 15px;
-                border-radius:20px;font-weight:bold;font-size:.85rem;">{status}</span>
-                </div>""", unsafe_allow_html=True)
-            c1, c2 = st.columns(2)
-            c1.metric("Tổng tiền hàng", f"{row.get('Tổng tiền hàng', 0):,.0f} đ")
-            c2.metric("Thực tế trả",    f"{row.get('Khách đã trả', 0):,.0f} đ")
-            cols = ["Mã hàng", "Tên hàng", "Số lượng", "Đơn giá", "Thành tiền", "Ghi chú hàng hóa"]
+                f'<span style="background:{color};color:#fff;padding:3px 12px;'
+                f'border-radius:20px;font-size:.8rem;font-weight:600;">{status}</span>',
+                unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+            c1,c2 = st.columns(2)
+            c1.metric("Tổng tiền hàng", f"{row.get('Tổng tiền hàng',0):,.0f} đ")
+            c2.metric("Khách đã trả",   f"{row.get('Khách đã trả',0):,.0f} đ")
+
+            cols = ["Mã hàng","Tên hàng","Số lượng","Đơn giá","Thành tiền","Ghi chú hàng hóa"]
             dv = inv_df[[c for c in cols if c in inv_df.columns]].copy()
-            for c in ["Đơn giá", "Thành tiền"]:
-                if c in dv.columns:
-                    dv[c] = dv[c].apply(lambda x: f"{x:,.0f} đ")
-            with st.expander("📋 Chi tiết hàng hóa", expanded=False):
+            for c in ["Đơn giá","Thành tiền"]:
+                if c in dv.columns: dv[c] = dv[c].apply(lambda x: f"{x:,.0f}")
+            with st.expander("Chi tiết hàng hóa", expanded=False):
                 st.dataframe(dv, use_container_width=True, hide_index=True)
 
-    def show_list(res):
-        active   = res[res["Trạng thái"] != "Đã hủy"]
-        canceled = res[res["Trạng thái"] == "Đã hủy"]
-        for code in active["Mã hóa đơn"].unique():
-            show_invoice(active[active["Mã hóa đơn"] == code], code)
-        if not canceled.empty:
-            n = canceled["Mã hóa đơn"].nunique()
-            st.markdown("<br>", unsafe_allow_html=True)
-            with st.expander(f"🗑️ Hóa đơn Đã hủy ({n})", expanded=False):
-                for code in canceled["Mã hóa đơn"].unique():
-                    show_invoice(canceled[canceled["Mã hóa đơn"] == code], code)
+    def render_list(res):
+        ok  = res[res["Trạng thái"] != "Đã hủy"]
+        huy = res[res["Trạng thái"] == "Đã hủy"]
+        for code in ok["Mã hóa đơn"].unique():
+            render_invoice(ok[ok["Mã hóa đơn"]==code], code)
+        if not huy.empty:
+            with st.expander(f"Hóa đơn đã hủy ({huy['Mã hóa đơn'].nunique()})", expanded=False):
+                for code in huy["Mã hóa đơn"].unique():
+                    render_invoice(huy[huy["Mã hóa đơn"]==code], code)
 
     try:
-        # Module hóa đơn luôn filter theo active branch
         active = get_active_branch()
         raw = load_hoa_don(branches_key=(active,))
         if raw.empty:
-            st.info("💡 Chưa có dữ liệu hóa đơn tại chi nhánh này.")
-            return
+            st.info("Chưa có dữ liệu hóa đơn tại chi nhánh này."); return
 
-        if st.session_state.get("so_dong_trung", 0) > 0:
-            st.warning(f"⚠️ Phát hiện {st.session_state['so_dong_trung']} dòng trùng đã lọc.")
+        if st.session_state.get("so_dong_trung",0) > 0:
+            st.caption(f"⚠ {st.session_state['so_dong_trung']} dòng trùng đã lọc.")
 
         data = raw.copy()
-        data["SĐT_Search"] = data["Điện thoại"].fillna("").str.replace(r"\D+", "", regex=True)
+        data["SĐT_Search"] = data["Điện thoại"].fillna("").str.replace(r"\D+","",regex=True)
 
-        t1, t2, t3 = st.tabs(["📞 Số điện thoại", "🧾 Mã Hóa Đơn", "📅 Ngày tháng"])
+        t1,t2,t3 = st.tabs(["Số điện thoại","Mã hóa đơn","Ngày tháng"])
         with t1:
-            phone = st.text_input("Nhập số điện thoại:", key="in_phone")
+            phone = st.text_input("Số điện thoại:", key="in_phone", placeholder="Nhập số điện thoại...")
             if phone:
-                res = data[data["SĐT_Search"].str.contains(phone.replace(" ", ""), na=False)]
+                res = data[data["SĐT_Search"].str.contains(phone.replace(" ",""),na=False)]
                 if not res.empty:
-                    st.info(f"Khách hàng: **{res.iloc[0].get('Tên khách hàng', 'Khách lẻ')}**")
-                    show_list(res)
-                else:
-                    st.warning("Không tìm thấy số điện thoại.")
+                    st.caption(f"Khách hàng: **{res.iloc[0].get('Tên khách hàng','Khách lẻ')}**")
+                    render_list(res)
+                else: st.warning("Không tìm thấy số điện thoại.")
         with t2:
-            inv = st.text_input("Nhập mã (Ví dụ: 1007 hoặc HD011007):", key="in_inv")
+            inv = st.text_input("Mã hóa đơn:", key="in_inv", placeholder="VD: 1007 hoặc HD011007")
             if inv:
-                res = data[data["Mã hóa đơn"].str.upper().str.endswith(inv.strip().upper(), na=False)]
-                if not res.empty: show_list(res)
+                res = data[data["Mã hóa đơn"].str.upper().str.endswith(inv.strip().upper(),na=False)]
+                if not res.empty: render_list(res)
                 else: st.warning("Không tìm thấy mã hóa đơn.")
         with t3:
-            ds = st.text_input("Nhập ngày/tháng (Ví dụ: 14/04/2026):", key="in_date")
+            ds = st.text_input("Ngày:", key="in_date", placeholder="VD: 14/04/2026")
             if ds:
-                res = data[data["Thời gian"].astype(str).str.contains(ds.strip(), na=False)]
+                res = data[data["Thời gian"].astype(str).str.contains(ds.strip(),na=False)]
                 if not res.empty:
-                    st.success(f"Tìm thấy {res['Mã hóa đơn'].nunique()} hóa đơn.")
-                    show_list(res)
-                else:
-                    st.warning("Không có dữ liệu trong ngày này.")
+                    st.caption(f"Tìm thấy {res['Mã hóa đơn'].nunique()} hóa đơn")
+                    render_list(res)
+                else: st.warning("Không có dữ liệu trong ngày này.")
     except Exception as e:
-        st.error(f"Lỗi tải Hóa đơn: {e}")
+        st.error(f"Lỗi: {e}")
 
 
 # ==========================================
-# MODULE 2: THẺ KHO
+# MODULE: HÀNG HÓA (v13.1)
 # ==========================================
 
-def module_the_kho():
+def module_hang_hoa():
+    """
+    Tra cứu hàng hóa theo chuẩn KiotViet:
+    - Search theo mã/tên
+    - Filter nhóm hàng (v13.1)
+    - Bảng: Mã | Tên | Tồn cuối kỳ
+    - Mở rộng: chi tiết nhập/xuất/tồn đầu theo chi nhánh
+    """
     try:
         active = get_active_branch()
-        data = load_the_kho(branches_key=(active,))
+
+        # Ke_toan/admin có thể chọn xem nhiều CN
+        accessible = get_accessible_branches()
+        if is_ke_toan_or_admin() and len(accessible) > 1:
+            view_branches = st.multiselect(
+                "Chi nhánh:", accessible,
+                default=[active], key="hh_cn",
+                label_visibility="collapsed"
+            )
+            if not view_branches:
+                st.warning("Chọn ít nhất một chi nhánh."); return
+        else:
+            view_branches = [active]
+
+        data = load_the_kho(branches_key=tuple(view_branches))
         if data.empty:
-            st.info("💡 Chưa có dữ liệu thẻ kho tại chi nhánh này.")
-            return
-        ma = st.text_input("🔍 Nhập Mã hàng hóa (Ví dụ: CASIO-01):").strip().upper()
-        if ma:
-            res = data[data["Mã hàng"].str.upper().str.contains(ma, na=False)]
-            if not res.empty:
-                st.success(f"Tìm thấy **{len(res)}** dòng — **{res.iloc[0].get('Tên hàng', ma)}**")
-                cols = ["Chi nhánh", "Mã hàng", "Tên hàng", "Tồn đầu kì", "Nhập NCC",
-                        "Xuất bán", "Tồn cuối kì", "Giá trị cuối kì"]
-                dv = res[[c for c in cols if c in res.columns]].copy()
-                for c in ["Giá trị cuối kì", "Giá trị đầu kì"]:
-                    if c in dv.columns:
-                        dv[c] = dv[c].apply(lambda x: f"{x:,.0f} đ")
-                st.dataframe(dv, use_container_width=True, hide_index=True)
-            else:
-                st.warning("Không tìm thấy mã hàng này.")
+            st.info("Chưa có dữ liệu tồn kho tại chi nhánh này."); return
+
+        # ── v13.1: Filter nhóm hàng ──
+        nhom_list = sorted(data["Nhóm hàng"].dropna().unique().tolist()) \
+                    if "Nhóm hàng" in data.columns else []
+
+        col_search, col_nhom = st.columns([3, 2])
+        with col_search:
+            keyword = st.text_input(
+                "Tìm hàng hóa:", key="hh_search",
+                placeholder="Nhập mã hoặc tên hàng...")
+        with col_nhom:
+            nhom_chon = st.selectbox(
+                "Nhóm hàng:", ["Tất cả nhóm"] + nhom_list,
+                key="hh_nhom", label_visibility="collapsed")
+
+        # ── Lọc dữ liệu ──
+        filtered = data.copy()
+        if keyword.strip():
+            kw = keyword.strip().upper()
+            mask = (
+                filtered["Mã hàng"].str.upper().str.contains(kw, na=False) |
+                filtered["Tên hàng"].str.upper().str.contains(kw, na=False)
+            )
+            filtered = filtered[mask]
+        if nhom_chon != "Tất cả nhóm" and "Nhóm hàng" in filtered.columns:
+            filtered = filtered[filtered["Nhóm hàng"] == nhom_chon]
+
+        if filtered.empty:
+            st.warning("Không tìm thấy hàng hóa phù hợp."); return
+
+        # ── Tổng hợp tồn kho theo mã hàng (gộp nhiều chi nhánh nếu cần) ──
+        agg = filtered.groupby(["Mã hàng","Tên hàng"], as_index=False).agg(
+            Nhom=("Nhóm hàng",     "first"),
+            Ton_dau=("Tồn đầu kì",  "sum"),
+            Nhap=("Nhập NCC",       "sum"),
+            Xuat=("Xuất bán",       "sum"),
+            Ton_cuoi=("Tồn cuối kì","sum"),
+        )
+        agg = agg.sort_values("Ton_cuoi", ascending=False).reset_index(drop=True)
+
+        st.caption(f"**{len(agg)}** mặt hàng · Chi nhánh: {', '.join(view_branches)}")
+        st.markdown("---")
+
+        # ── Bảng kết quả — render từng dòng ──
+        for _, row in agg.iterrows():
+            ma   = row["Mã hàng"]
+            ten  = row["Tên hàng"]
+            nhom = row.get("Nhom","")
+            ton  = int(row["Ton_cuoi"])
+
+            # Màu tồn kho
+            if ton <= 0:   badge_class = "zero"
+            elif ton <= 5: badge_class = "low"
+            else:          badge_class = "ton-kho-badge"
+
+            col_info, col_ton = st.columns([5, 1])
+            with col_info:
+                st.markdown(
+                    f'<div class="hang-hoa-row">'
+                    f'<div class="ma-hang">{ma}</div>'
+                    f'<div class="ten-hang">{ten}</div>'
+                    f'{"<span class=nhom-hang-tag>" + nhom + "</span>" if nhom else ""}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            with col_ton:
+                st.markdown(
+                    f'<div style="padding-top:16px;text-align:right;">'
+                    f'<span class="{badge_class}">{ton:,}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+            # ── Chi tiết mở rộng theo chi nhánh ──
+            detail_rows = filtered[filtered["Mã hàng"] == ma]
+            with st.expander("Chi tiết", expanded=False):
+                if len(view_branches) > 1:
+                    # Hiển thị từng chi nhánh
+                    for _, dr in detail_rows.iterrows():
+                        cn = dr.get("Chi nhánh","")
+                        st.markdown(f"**{cn}**")
+                        dc1,dc2,dc3,dc4 = st.columns(4)
+                        dc1.metric("Tồn đầu kỳ",  f"{int(dr.get('Tồn đầu kì',0)):,}")
+                        dc2.metric("Nhập NCC",     f"{int(dr.get('Nhập NCC',0)):,}")
+                        dc3.metric("Xuất bán",     f"{int(dr.get('Xuất bán',0)):,}")
+                        dc4.metric("Tồn cuối kỳ",  f"{int(dr.get('Tồn cuối kì',0)):,}")
+                        st.markdown("---")
+                else:
+                    dr = detail_rows.iloc[0]
+                    dc1,dc2,dc3,dc4 = st.columns(4)
+                    dc1.metric("Tồn đầu kỳ",  f"{int(dr.get('Tồn đầu kì',0)):,}")
+                    dc2.metric("Nhập NCC",     f"{int(dr.get('Nhập NCC',0)):,}")
+                    dc3.metric("Xuất bán",     f"{int(dr.get('Xuất bán',0)):,}")
+                    dc4.metric("Tồn cuối kỳ",  f"{int(dr.get('Tồn cuối kì',0)):,}")
+
     except Exception as e:
-        st.error(f"Lỗi tải Thẻ kho: {e}")
+        st.error(f"Lỗi tải Hàng hóa: {e}")
 
 
 # ==========================================
-# MODULE QUẢN LÝ NHÂN VIÊN
+# MODULE: QUẢN LÝ NHÂN VIÊN
 # ==========================================
 
 def module_nhan_vien():
-    st.markdown("### 👥 Quản lý nhân viên")
+    st.markdown("### Quản lý nhân viên")
     try:
-        cn_res = supabase.table("chi_nhanh").select("*").eq("active", True).execute()
+        cn_res = supabase.table("chi_nhanh").select("*").eq("active",True).execute()
         cn_map = {cn["ten"]: cn["id"] for cn in cn_res.data} if cn_res.data else {}
     except Exception as e:
         st.error(f"Lỗi tải chi nhánh: {e}"); return
 
-    tab_add, tab_list = st.tabs(["➕ Thêm nhân viên", "📋 Danh sách"])
-
+    tab_add, tab_list = st.tabs(["Thêm nhân viên","Danh sách"])
     with tab_add:
-        with st.form("form_them_nv", clear_on_submit=True):
-            c1, c2 = st.columns(2)
+        with st.form("them_nv", clear_on_submit=True):
+            c1,c2 = st.columns(2)
             with c1:
                 nu  = st.text_input("Username:")
                 nn  = st.text_input("Họ tên:")
-                nr  = st.selectbox("Role:", ["nhan_vien", "ke_toan", "admin"])
+                nr  = st.selectbox("Role:", ["nhan_vien","ke_toan","admin"])
             with c2:
                 np1 = st.text_input("Mật khẩu:", type="password")
-                np2 = st.text_input("Xác nhận MK:", type="password")
+                np2 = st.text_input("Xác nhận:", type="password")
                 ncs = st.multiselect("Chi nhánh:", list(cn_map.keys()))
-            if st.form_submit_button("➕ Tạo tài khoản", type="primary"):
-                if not all([nu, nn, np1, np2]):
-                    st.error("Điền đầy đủ thông tin.")
-                elif np1 != np2:
-                    st.error("Mật khẩu không khớp.")
-                elif len(np1) < 6:
-                    st.error("Tối thiểu 6 ký tự.")
-                elif not ncs and nr != "admin":
-                    st.error("Chọn ít nhất một chi nhánh.")
+            if st.form_submit_button("Tạo tài khoản", type="primary"):
+                if not all([nu,nn,np1,np2]): st.error("Điền đầy đủ.")
+                elif np1!=np2: st.error("Mật khẩu không khớp.")
+                elif len(np1)<6: st.error("Tối thiểu 6 ký tự.")
+                elif not ncs and nr!="admin": st.error("Chọn ít nhất một chi nhánh.")
                 else:
                     try:
                         res = supabase.table("nhan_vien").insert({
-                            "username": nu, "ho_ten": nn,
-                            "mat_khau": hash_password(np1),
-                            "role": nr, "active": True,
+                            "username":nu,"ho_ten":nn,"mat_khau":hash_password(np1),"role":nr,"active":True
                         }).execute()
                         nv_id = res.data[0]["id"]
                         for cn in ncs:
                             supabase.table("nhan_vien_chi_nhanh").insert({
-                                "nhan_vien_id": nv_id,
-                                "chi_nhanh_id": cn_map[cn]
+                                "nhan_vien_id":nv_id,"chi_nhanh_id":cn_map[cn]
                             }).execute()
-                        st.success(f"✅ Tạo tài khoản **{nn}** thành công!")
-                    except Exception as e:
-                        st.error(f"Lỗi: {e}")
+                        st.success(f"Tạo tài khoản **{nn}** thành công!")
+                    except Exception as e: st.error(f"Lỗi: {e}")
 
     with tab_list:
         try:
             nv_list = supabase.table("nhan_vien").select("*").order("id").execute().data or []
-            current = get_user()
+            cur = get_user()
             for nv in nv_list:
                 cn2      = supabase.table("nhan_vien_chi_nhanh") \
-                    .select("chi_nhanh(ten)").eq("nhan_vien_id", nv["id"]).execute()
+                    .select("chi_nhanh(ten)").eq("nhan_vien_id",nv["id"]).execute()
                 cn_names = [x["chi_nhanh"]["ten"] for x in cn2.data] if cn2.data else []
-                ia       = "🟢" if nv["active"] else "🔴"
-                ir       = {"admin": "👑", "ke_toan": "📊", "nhan_vien": "👤"}.get(nv["role"], "👤")
-                is_self  = (nv["id"] == current.get("id"))
+                status   = "Hoạt động" if nv["active"] else "Đã khóa"
+                role_lbl = {"admin":"Admin","ke_toan":"Kế toán","nhan_vien":"Nhân viên"}.get(nv["role"],"")
+                is_self  = (nv["id"]==cur.get("id"))
                 with st.expander(
-                    f"{ia} {ir} **{nv['ho_ten']}** — `{nv['username']}`"
-                    + (" *(bạn)*" if is_self else "")
+                    f"**{nv['ho_ten']}** · {role_lbl} · {status}"
+                    + (" (bạn)" if is_self else "")
                 ):
-                    ci, cp, ca = st.columns([2, 2, 1])
+                    st.caption(f"Username: `{nv['username']}` · Chi nhánh: {', '.join(cn_names) if cn_names else '—'}")
+                    ci,cp,ca = st.columns([2,2,1])
                     with ci:
-                        st.caption(f"Role: **{nv['role']}**")
-                        st.caption(f"Chi nhánh: {', '.join(cn_names) if cn_names else '—'}")
-                        nr2 = st.selectbox("Đổi role:", ["nhan_vien", "ke_toan", "admin"],
-                            index=["nhan_vien", "ke_toan", "admin"].index(nv["role"]),
+                        nr2 = st.selectbox("Role:",["nhan_vien","ke_toan","admin"],
+                            index=["nhan_vien","ke_toan","admin"].index(nv["role"]),
                             key=f"role_{nv['id']}")
-                        if st.button("💾 Lưu role", key=f"sr_{nv['id']}"):
-                            supabase.table("nhan_vien").update({"role": nr2}).eq("id", nv["id"]).execute()
+                        if st.button("Lưu role", key=f"sr_{nv['id']}"):
+                            supabase.table("nhan_vien").update({"role":nr2}).eq("id",nv["id"]).execute()
                             st.success("Đã cập nhật!"); st.rerun()
                     with cp:
                         np_ = st.text_input("Mật khẩu mới:", type="password", key=f"np_{nv['id']}")
-                        if st.button("🔑 Đổi MK", key=f"sp_{nv['id']}"):
-                            if np_ and len(np_) >= 6:
+                        if st.button("Đổi mật khẩu", key=f"sp_{nv['id']}"):
+                            if np_ and len(np_)>=6:
                                 supabase.table("nhan_vien").update(
-                                    {"mat_khau": hash_password(np_)}).eq("id", nv["id"]).execute()
+                                    {"mat_khau":hash_password(np_)}).eq("id",nv["id"]).execute()
                                 st.success("Đã đổi mật khẩu!")
-                            else:
-                                st.warning("Tối thiểu 6 ký tự.")
+                            else: st.warning("Tối thiểu 6 ký tự.")
                     with ca:
                         if not is_self:
-                            lbl = "🔒 Khóa" if nv["active"] else "🔓 Mở"
-                            if st.button(lbl, key=f"tog_{nv['id']}"):
+                            if st.button("Khóa" if nv["active"] else "Mở khóa", key=f"tog_{nv['id']}"):
                                 supabase.table("nhan_vien").update(
-                                    {"active": not nv["active"]}).eq("id", nv["id"]).execute()
+                                    {"active":not nv["active"]}).eq("id",nv["id"]).execute()
                                 st.rerun()
-                        else:
-                            st.caption("*(tài khoản bạn)*")
-        except Exception as e:
-            st.error(f"Lỗi: {e}")
+                        else: st.caption("(bạn)")
+        except Exception as e: st.error(f"Lỗi: {e}")
 
 
 # ==========================================
-# MODULE 3: QUẢN TRỊ
+# MODULE: QUẢN TRỊ
 # ==========================================
 
 def module_quan_tri():
     if not is_admin():
-        st.error("⛔ Bạn không có quyền truy cập.")
-        return
+        st.error("Bạn không có quyền truy cập."); return
 
-    tab_ds, tab_up, tab_del, tab_nv = st.tabs([
-        "📊 Doanh số", "📤 Upload", "🗑️ Xóa dữ liệu", "👥 Nhân viên"
-    ])
+    tab_ds, tab_up, tab_del, tab_nv = st.tabs(["Doanh số","Upload","Xóa dữ liệu","Nhân viên"])
 
     with tab_ds:
         hien_thi_dashboard()
 
     with tab_up:
-        s1, s2 = st.tabs(["📦 Thẻ kho", "🧾 Hóa đơn"])
+        s1,s2 = st.tabs(["Thẻ kho","Hóa đơn"])
         with s1:
-            st.markdown("**Hướng dẫn:** File **Xuất nhập tồn chi tiết** từ KiotViet (`.xlsx`).")
-            up = st.file_uploader("Chọn file:", type=["xlsx", "xls"], key="up_kho")
+            st.caption("File **Xuất nhập tồn chi tiết** từ KiotViet (.xlsx)")
+            up = st.file_uploader("Chọn file:", type=["xlsx","xls"], key="up_kho")
             if up:
                 try:
                     df   = pd.read_excel(up)
-                    st.success(f"Đọc được **{len(df)}** dòng")
-                    miss = [c for c in ["Mã hàng", "Tên hàng", "Chi nhánh", "Tồn cuối kì"]
-                            if c not in df.columns]
-                    if miss:
-                        st.error(f"Thiếu cột: {', '.join(miss)}")
+                    st.success(f"Đọc được {len(df)} dòng")
+                    miss = [c for c in ["Mã hàng","Tên hàng","Chi nhánh","Tồn cuối kì"] if c not in df.columns]
+                    if miss: st.error(f"Thiếu cột: {', '.join(miss)}")
                     else:
                         st.info(f"Chi nhánh: {', '.join(df['Chi nhánh'].unique())}")
-                        with st.expander("👁️ Xem trước"):
+                        with st.expander("Xem trước"):
                             st.dataframe(df.head(), use_container_width=True, hide_index=True)
-                        if st.button("🚀 Upload Thẻ kho", key="btn_up_kho", type="primary"):
+                        if st.button("Upload thẻ kho", key="btn_up_kho", type="primary"):
                             with st.spinner("Đang xử lý..."):
-                                tc = ["Nhóm hàng", "Mã hàng", "Mã vạch", "Tên hàng", "Thương hiệu", "Chi nhánh"]
+                                tc = ["Nhóm hàng","Mã hàng","Mã vạch","Tên hàng","Thương hiệu","Chi nhánh"]
                                 for col in tc:
                                     if col in df.columns:
-                                        df[col] = df[col].astype(str) \
-                                            .str.replace(",", " ", regex=False) \
-                                            .str.replace("\n", " ", regex=False).str.strip()
-                                        df.loc[df[col] == "nan", col] = None
+                                        df[col] = df[col].astype(str).str.replace(","," ",regex=False) \
+                                            .str.replace("\n"," ",regex=False).str.strip()
+                                        df.loc[df[col]=="nan",col] = None
                                 for col in [c for c in df.columns if c not in tc]:
-                                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
-                                records = df.where(pd.notnull(df), None).to_dict(orient="records")
+                                    df[col] = pd.to_numeric(df[col],errors="coerce").fillna(0).astype(int)
+                                records = df.where(pd.notnull(df),None).to_dict(orient="records")
                                 for r in records:
-                                    for k, v in r.items():
-                                        if isinstance(v, np.integer):  r[k] = int(v)
-                                        elif isinstance(v, np.floating): r[k] = float(v)
-                                total, ok = len(records), 0
-                                prog = st.progress(0, text="Đang upload...")
-                                for i in range(0, total, 500):
+                                    for k,v in r.items():
+                                        if isinstance(v,np.integer): r[k]=int(v)
+                                        elif isinstance(v,np.floating): r[k]=float(v)
+                                total,ok = len(records),0
+                                prog = st.progress(0,text="Đang upload...")
+                                for i in range(0,total,500):
                                     try:
                                         supabase.table("the_kho").insert(records[i:i+500]).execute()
-                                        ok += len(records[i:i+500])
-                                        prog.progress(min(ok / total, 1.0), text=f"{ok}/{total}...")
-                                    except Exception as e:
-                                        st.error(f"Batch {i}: {e}")
+                                        ok+=len(records[i:i+500])
+                                        prog.progress(min(ok/total,1.0),text=f"{ok}/{total}...")
+                                    except Exception as e: st.error(f"Batch {i}: {e}")
                                 prog.empty()
-                                if ok == total:
-                                    st.success(f"✅ Upload {ok} dòng thành công!")
-                                    st.cache_data.clear()
-                except Exception as e:
-                    st.error(f"Lỗi: {e}")
+                                if ok==total:
+                                    st.success(f"Upload {ok} dòng thành công!"); st.cache_data.clear()
+                except Exception as e: st.error(f"Lỗi: {e}")
 
         with s2:
-            st.markdown("**Hướng dẫn:** File **Danh sách hóa đơn** từ KiotViet (`.xlsx`).")
-            up = st.file_uploader("Chọn file:", type=["xlsx", "xls"], key="up_hd")
+            st.caption("File **Danh sách hóa đơn** từ KiotViet (.xlsx)")
+            up = st.file_uploader("Chọn file:", type=["xlsx","xls"], key="up_hd")
             if up:
                 try:
                     df   = pd.read_excel(up)
-                    st.success(f"Đọc được **{len(df)}** dòng")
-                    miss = [c for c in ["Mã hóa đơn", "Thời gian", "Chi nhánh"]
-                            if c not in df.columns]
-                    if miss:
-                        st.error(f"Thiếu cột: {', '.join(miss)}")
+                    st.success(f"Đọc được {len(df)} dòng")
+                    miss = [c for c in ["Mã hóa đơn","Thời gian","Chi nhánh"] if c not in df.columns]
+                    if miss: st.error(f"Thiếu cột: {', '.join(miss)}")
                     else:
-                        st.info(f"{df['Mã hóa đơn'].nunique()} hóa đơn — "
-                                f"{', '.join(df['Chi nhánh'].unique())}")
-                        with st.expander("👁️ Xem trước"):
+                        st.info(f"{df['Mã hóa đơn'].nunique()} hóa đơn · {', '.join(df['Chi nhánh'].unique())}")
+                        with st.expander("Xem trước"):
                             st.dataframe(df.head(), use_container_width=True, hide_index=True)
-                        if st.button("🚀 Upload Hóa đơn", key="btn_up_hd", type="primary"):
+                        if st.button("Upload hóa đơn", key="btn_up_hd", type="primary"):
                             with st.spinner("Đang xử lý..."):
                                 for col in df.columns:
-                                    if df[col].dtype == "object":
-                                        df[col] = df[col].astype(str) \
-                                            .str.replace("\n", " ", regex=False).str.strip()
-                                        df.loc[df[col] == "nan", col] = None
-                                for col in ["Tổng tiền hàng", "Khách cần trả", "Khách đã trả",
-                                            "Đơn giá", "Thành tiền"]:
+                                    if df[col].dtype=="object":
+                                        df[col] = df[col].astype(str).str.replace("\n"," ",regex=False).str.strip()
+                                        df.loc[df[col]=="nan",col] = None
+                                for col in ["Tổng tiền hàng","Khách cần trả","Khách đã trả","Đơn giá","Thành tiền"]:
                                     if col in df.columns:
-                                        df[col] = pd.to_numeric(
-                                            df[col], errors="coerce").fillna(0).astype(int)
-                                records = df.where(pd.notnull(df), None).to_dict(orient="records")
+                                        df[col] = pd.to_numeric(df[col],errors="coerce").fillna(0).astype(int)
+                                records = df.where(pd.notnull(df),None).to_dict(orient="records")
                                 for r in records:
-                                    for k, v in r.items():
-                                        if isinstance(v, np.integer):  r[k] = int(v)
-                                        elif isinstance(v, np.floating): r[k] = float(v)
-                                total, ok = len(records), 0
-                                prog = st.progress(0, text="Đang upload...")
-                                for i in range(0, total, 500):
+                                    for k,v in r.items():
+                                        if isinstance(v,np.integer): r[k]=int(v)
+                                        elif isinstance(v,np.floating): r[k]=float(v)
+                                total,ok = len(records),0
+                                prog = st.progress(0,text="Đang upload...")
+                                for i in range(0,total,500):
                                     try:
                                         supabase.table("hoa_don").insert(records[i:i+500]).execute()
-                                        ok += len(records[i:i+500])
-                                        prog.progress(min(ok / total, 1.0), text=f"{ok}/{total}...")
-                                    except Exception as e:
-                                        st.error(f"Batch {i}: {e}")
+                                        ok+=len(records[i:i+500])
+                                        prog.progress(min(ok/total,1.0),text=f"{ok}/{total}...")
+                                    except Exception as e: st.error(f"Batch {i}: {e}")
                                 prog.empty()
-                                if ok == total:
-                                    st.success(f"✅ Upload {ok} dòng thành công!")
-                                    st.cache_data.clear()
-                except Exception as e:
-                    st.error(f"Lỗi: {e}")
+                                if ok==total:
+                                    st.success(f"Upload {ok} dòng thành công!"); st.cache_data.clear()
+                except Exception as e: st.error(f"Lỗi: {e}")
 
     with tab_del:
         st.caption("Xóa dữ liệu cũ trước khi upload lại.")
-        c1, c2 = st.columns(2)
+        c1,c2 = st.columns(2)
         with c1:
-            bang = st.selectbox("Bảng:", ["the_kho", "hoa_don"], key="sel_del_table")
+            bang = st.selectbox("Bảng:", ["the_kho","hoa_don"], key="del_table")
         with c2:
             try:
-                tmp = load_the_kho(branches_key=tuple(ALL_BRANCHES)) \
-                      if bang == "the_kho" \
-                      else load_hoa_don(branches_key=tuple(ALL_BRANCHES))
-                ds  = ["-- Tất cả --"] + sorted(tmp["Chi nhánh"].dropna().unique().tolist()) \
-                      if not tmp.empty else ["-- Tất cả --"]
-            except Exception:
-                ds = ["-- Tất cả --"]
-            cn_x = st.selectbox("Chi nhánh:", ds, key="sel_del_branch")
+                tmp = load_the_kho(tuple(ALL_BRANCHES)) if bang=="the_kho" else load_hoa_don(tuple(ALL_BRANCHES))
+                ds  = ["Tất cả"]+sorted(tmp["Chi nhánh"].dropna().unique().tolist()) if not tmp.empty else ["Tất cả"]
+            except: ds = ["Tất cả"]
+            cn_x = st.selectbox("Chi nhánh:", ds, key="del_cn")
         try:
-            q   = supabase.table(bang).select("id", count="exact")
-            if cn_x != "-- Tất cả --": q = q.eq("Chi nhánh", cn_x)
+            q   = supabase.table(bang).select("id",count="exact")
+            if cn_x!="Tất cả": q=q.eq("Chi nhánh",cn_x)
             cnt = q.execute().count or 0
-        except Exception:
-            cnt = "?"
-        pv = f"chi nhánh **{cn_x}**" if cn_x != "-- Tất cả --" else "**TOÀN BỘ**"
+        except: cnt="?"
+        pv = f"chi nhánh **{cn_x}**" if cn_x!="Tất cả" else "**toàn bộ**"
         st.warning(f"Sẽ xóa **{cnt}** dòng từ `{bang}` — {pv}")
-        confirm = st.text_input("Gõ **XOA** để xác nhận:", key="confirm_del")
-        if st.button("🗑️ Thực hiện xóa", key="btn_del"):
-            if confirm != "XOA":
-                st.error("Gõ đúng XOA để xác nhận.")
+        confirm = st.text_input("Gõ XOA để xác nhận:", key="confirm_del")
+        if st.button("Xóa dữ liệu", key="btn_del", type="primary"):
+            if confirm!="XOA": st.error("Gõ đúng XOA để xác nhận.")
             else:
                 with st.spinner("Đang xóa..."):
                     try:
                         q = supabase.table(bang).delete()
-                        q = q.eq("Chi nhánh", cn_x) \
-                            if cn_x != "-- Tất cả --" \
-                            else q.neq("id", -999999)
-                        q.execute()
-                        st.success("✅ Xóa thành công!")
-                        st.cache_data.clear()
-                    except Exception as e:
-                        st.error(f"Lỗi: {e}")
+                        q = q.eq("Chi nhánh",cn_x) if cn_x!="Tất cả" else q.neq("id",-999999)
+                        q.execute(); st.success("Xóa thành công!"); st.cache_data.clear()
+                    except Exception as e: st.error(f"Lỗi: {e}")
 
     with tab_nv:
         module_nhan_vien()
 
 
 # ==========================================
-# NAVIGATION HEADER
+# NAVIGATION
 # ==========================================
 
-user       = get_user()
-active_cn  = get_active_branch()
-icon_cn    = CN_ICON.get(active_cn, "🏪")
-selectable = get_selectable_branches()
+user      = get_user()
+active_cn = get_active_branch()
+sel_cns   = get_selectable_branches()
 
-col_menu, col_cn, col_btns = st.columns([4, 2, 1])
+# Header: [nav] [chi nhánh + đổi] [reload | logout]
+col_nav, col_cn, col_act = st.columns([4, 2, 1])
 
-with col_menu:
-    menu = ["📊 Tổng quan", "🧾 Hóa đơn", "📦 Thẻ kho"]
-    if is_admin():
-        menu.append("⚙️ Quản trị")
-    chuc_nang = st.radio("Phân hệ:", menu, horizontal=True, label_visibility="collapsed")
+with col_nav:
+    menu = ["Tổng quan","Hóa đơn","Hàng hóa"]
+    if is_admin(): menu.append("Quản trị")
+    page = st.radio("nav", menu, horizontal=True, label_visibility="collapsed")
 
 with col_cn:
     st.markdown(
-        f"<div style='padding-top:6px;font-size:0.95rem;'>"
-        f"{icon_cn} <b>{active_cn}</b></div>",
-        unsafe_allow_html=True
-    )
-    # Nút đổi chi nhánh — chỉ hiện nếu user có nhiều hơn 1 lựa chọn
-    if len(selectable) > 1:
-        if st.button("🔀 Đổi chi nhánh", use_container_width=True):
-            del st.session_state["active_chi_nhanh"]
-            st.rerun()
+        f"<div style='padding-top:6px;font-size:0.9rem;color:#444;'>"
+        f"<b>{active_cn}</b></div>",
+        unsafe_allow_html=True)
+    if len(sel_cns) > 1:
+        if st.button("Đổi chi nhánh", use_container_width=True):
+            del st.session_state["active_chi_nhanh"]; st.rerun()
 
-with col_btns:
-    if st.button("🔄", use_container_width=True, help="Reload dữ liệu"):
-        st.cache_data.clear()
-        st.rerun()
-    if st.button("🚪", use_container_width=True, help="Đăng xuất"):
-        do_logout()
-        st.rerun()
+with col_act:
+    if st.button("Reload", use_container_width=True):
+        st.cache_data.clear(); st.rerun()
+    if st.button("Đăng xuất", use_container_width=True):
+        do_logout(); st.rerun()
 
-st.markdown("<hr style='margin-top:0;margin-bottom:20px;'>", unsafe_allow_html=True)
+st.markdown("<hr style='margin:4px 0 16px 0;'>", unsafe_allow_html=True)
 
-if chuc_nang == "📊 Tổng quan":
-    module_tong_quan()
-elif chuc_nang == "🧾 Hóa đơn":
-    module_hoa_don()
-elif chuc_nang == "📦 Thẻ kho":
-    module_the_kho()
-elif chuc_nang == "⚙️ Quản trị":
-    module_quan_tri()
+if page == "Tổng quan":   module_tong_quan()
+elif page == "Hóa đơn":   module_hoa_don()
+elif page == "Hàng hóa":  module_hang_hoa()
+elif page == "Quản trị":  module_quan_tri()
