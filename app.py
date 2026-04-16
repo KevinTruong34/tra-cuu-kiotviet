@@ -8,7 +8,7 @@ import bcrypt
 import uuid
 
 # ==========================================
-# PHIEN BAN: 13.1 — Hang hoa + Mobile UI
+# PHIEN BAN: 13.2 — Fix lag hang hoa + nhom hang 2 cap
 # ==========================================
 
 st.set_page_config(page_title="Watch Store", layout="wide")
@@ -538,28 +538,48 @@ def module_hoa_don():
 
 
 # ==========================================
-# MODULE: HÀNG HÓA (v13.1)
+# MODULE: HÀNG HÓA (v13.2)
 # ==========================================
+
+def _parse_nhom_hoa(data: pd.DataFrame):
+    """
+    Phân tích nhóm hàng cha/con từ cột 'Nhóm hàng'.
+    KiotViet export thường có dạng 'Cha > Con' hoặc 'Cha/Con'.
+    Trả về (series_cha, series_con, has_hierarchy).
+    """
+    if "Nhóm hàng" not in data.columns:
+        return None, None, False
+
+    nhom = data["Nhóm hàng"].fillna("")
+
+    # Thử tách theo " > " trước, rồi "/"
+    for sep in [" > ", "/"]:
+        if nhom.str.contains(sep, regex=False).any():
+            parts  = nhom.str.split(sep, n=1, expand=True)
+            cha    = parts[0].str.strip()
+            con    = parts[1].str.strip() if 1 in parts.columns else pd.Series([""] * len(data))
+            return cha, con, True
+
+    # Không có phân cấp — toàn bộ là cha
+    return nhom, pd.Series([""] * len(data), index=data.index), False
+
 
 def module_hang_hoa():
     """
-    Tra cứu hàng hóa theo chuẩn KiotViet:
-    - Search theo mã/tên
-    - Filter nhóm hàng (v13.1)
-    - Bảng: Mã | Tên | Tồn cuối kỳ
-    - Mở rộng: chi tiết nhập/xuất/tồn đầu theo chi nhánh
+    v13.2 — Hàng hóa:
+    - st.dataframe cho danh sách (không lag)
+    - Lọc nhóm hàng 2 cấp cha/con
+    - Panel chi tiết riêng bên dưới (chỉ render 1 sản phẩm tại 1 thời điểm)
     """
     try:
-        active = get_active_branch()
-
-        # Ke_toan/admin có thể chọn xem nhiều CN
+        active     = get_active_branch()
         accessible = get_accessible_branches()
+
+        # ── Chi nhánh (ke_toan/admin xem nhiều) ──
         if is_ke_toan_or_admin() and len(accessible) > 1:
             view_branches = st.multiselect(
-                "Chi nhánh:", accessible,
-                default=[active], key="hh_cn",
-                label_visibility="collapsed"
-            )
+                "Chi nhánh:", accessible, default=[active],
+                key="hh_cn", label_visibility="collapsed")
             if not view_branches:
                 st.warning("Chọn ít nhất một chi nhánh."); return
         else:
@@ -569,99 +589,139 @@ def module_hang_hoa():
         if data.empty:
             st.info("Chưa có dữ liệu tồn kho tại chi nhánh này."); return
 
-        # ── v13.1: Filter nhóm hàng ──
-        nhom_list = sorted(data["Nhóm hàng"].dropna().unique().tolist()) \
-                    if "Nhóm hàng" in data.columns else []
+        # ── Parse nhóm hàng cha/con ──
+        cha_series, con_series, has_hier = _parse_nhom_hoa(data)
+        data = data.copy()
+        data["_nhom_cha"] = cha_series if cha_series is not None else ""
+        data["_nhom_con"] = con_series if con_series is not None else ""
 
-        col_search, col_nhom = st.columns([3, 2])
-        with col_search:
-            keyword = st.text_input(
-                "Tìm hàng hóa:", key="hh_search",
-                placeholder="Nhập mã hoặc tên hàng...")
-        with col_nhom:
-            nhom_chon = st.selectbox(
-                "Nhóm hàng:", ["Tất cả nhóm"] + nhom_list,
-                key="hh_nhom", label_visibility="collapsed")
+        # ── Filters: search + nhóm cha + nhóm con ──
+        col_s, col_c1, col_c2 = st.columns([3, 2, 2])
+        with col_s:
+            keyword = st.text_input("", key="hh_search",
+                placeholder="Tìm theo mã hoặc tên hàng...")
+        with col_c1:
+            nhom_cha_list = sorted(data["_nhom_cha"].dropna().unique().tolist())
+            nhom_cha_list = [n for n in nhom_cha_list if n]
+            cha_chon = st.selectbox(
+                "Nhóm cha:", ["Tất cả"] + nhom_cha_list,
+                key="hh_cha", label_visibility="collapsed")
+        with col_c2:
+            if has_hier and cha_chon != "Tất cả":
+                nhom_con_list = sorted(
+                    data[data["_nhom_cha"] == cha_chon]["_nhom_con"]
+                    .dropna().unique().tolist())
+                nhom_con_list = [n for n in nhom_con_list if n]
+                con_chon = st.selectbox(
+                    "Nhóm con:", ["Tất cả"] + nhom_con_list,
+                    key="hh_con", label_visibility="collapsed")
+            else:
+                st.selectbox("Nhóm con:", ["—"], key="hh_con_dis",
+                             disabled=True, label_visibility="collapsed")
+                con_chon = "Tất cả"
 
-        # ── Lọc dữ liệu ──
+        # ── Lọc ──
         filtered = data.copy()
         if keyword.strip():
             kw = keyword.strip().upper()
-            mask = (
+            filtered = filtered[
                 filtered["Mã hàng"].str.upper().str.contains(kw, na=False) |
                 filtered["Tên hàng"].str.upper().str.contains(kw, na=False)
-            )
-            filtered = filtered[mask]
-        if nhom_chon != "Tất cả nhóm" and "Nhóm hàng" in filtered.columns:
-            filtered = filtered[filtered["Nhóm hàng"] == nhom_chon]
+            ]
+        if cha_chon != "Tất cả":
+            filtered = filtered[filtered["_nhom_cha"] == cha_chon]
+        if con_chon != "Tất cả" and has_hier:
+            filtered = filtered[filtered["_nhom_con"] == con_chon]
 
         if filtered.empty:
             st.warning("Không tìm thấy hàng hóa phù hợp."); return
 
-        # ── Tổng hợp tồn kho theo mã hàng (gộp nhiều chi nhánh nếu cần) ──
+        # ── Tổng hợp theo mã hàng ──
         agg = filtered.groupby(["Mã hàng","Tên hàng"], as_index=False).agg(
-            Nhom=("Nhóm hàng",     "first"),
-            Ton_dau=("Tồn đầu kì",  "sum"),
-            Nhap=("Nhập NCC",       "sum"),
-            Xuat=("Xuất bán",       "sum"),
-            Ton_cuoi=("Tồn cuối kì","sum"),
+            Nhom_cha=("_nhom_cha",   "first"),
+            Nhom_con=("_nhom_con",   "first"),
+            Ton_dau =("Tồn đầu kì",  "sum"),
+            Nhap    =("Nhập NCC",    "sum"),
+            Xuat    =("Xuất bán",    "sum"),
+            Ton_cuoi=("Tồn cuối kì", "sum"),
+        ).sort_values("Ton_cuoi", ascending=False).reset_index(drop=True)
+
+        # Nhóm hiển thị: nếu có con thì "Cha > Con", không thì chỉ "Cha"
+        agg["Nhóm hàng"] = agg.apply(
+            lambda r: f"{r['Nhom_cha']} > {r['Nhom_con']}"
+                      if r['Nhom_con'] else r['Nhom_cha'], axis=1)
+
+        st.caption(
+            f"**{len(agg)}** mặt hàng · {', '.join(view_branches)}"
+            + (f" · Nhóm: {cha_chon}" if cha_chon != "Tất cả" else "")
         )
-        agg = agg.sort_values("Ton_cuoi", ascending=False).reset_index(drop=True)
 
-        st.caption(f"**{len(agg)}** mặt hàng · Chi nhánh: {', '.join(view_branches)}")
+        # ══════════════════════════════════════════════
+        # BẢNG DANH SÁCH — dùng st.dataframe (1 widget,
+        # không lag dù có hàng trăm sản phẩm)
+        # ══════════════════════════════════════════════
+        display_df = agg[["Mã hàng","Tên hàng","Nhóm hàng","Ton_cuoi"]].copy()
+        display_df = display_df.rename(columns={"Ton_cuoi": "Tồn kho"})
+        display_df["Tồn kho"] = display_df["Tồn kho"].astype(int)
+
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Mã hàng":    st.column_config.TextColumn("Mã hàng",    width="small"),
+                "Tên hàng":   st.column_config.TextColumn("Tên hàng",   width="large"),
+                "Nhóm hàng":  st.column_config.TextColumn("Nhóm hàng",  width="medium"),
+                "Tồn kho":    st.column_config.NumberColumn("Tồn kho",  width="small",
+                                  format="%d"),
+            },
+            height=min(400, 38 + len(display_df) * 35),
+        )
+
+        # ══════════════════════════════════════════════
+        # PANEL CHI TIẾT — chỉ render khi chọn mã hàng
+        # Tách biệt hoàn toàn với bảng → không lag
+        # ══════════════════════════════════════════════
         st.markdown("---")
+        st.markdown("**Chi tiết sản phẩm**")
 
-        # ── Bảng kết quả — render từng dòng ──
-        for _, row in agg.iterrows():
-            ma   = row["Mã hàng"]
-            ten  = row["Tên hàng"]
-            nhom = row.get("Nhom","")
-            ton  = int(row["Ton_cuoi"])
+        ma_list    = agg["Mã hàng"].tolist()
+        ten_list   = agg["Tên hàng"].tolist()
+        label_list = [f"{m}  —  {t}" for m, t in zip(ma_list, ten_list)]
 
-            # Màu tồn kho
-            if ton <= 0:   badge_class = "zero"
-            elif ton <= 5: badge_class = "low"
-            else:          badge_class = "ton-kho-badge"
+        chon = st.selectbox(
+            "Chọn sản phẩm:", ["— Chọn để xem chi tiết —"] + label_list,
+            key="hh_detail_sel", label_visibility="collapsed")
 
-            col_info, col_ton = st.columns([5, 1])
-            with col_info:
-                st.markdown(
-                    f'<div class="hang-hoa-row">'
-                    f'<div class="ma-hang">{ma}</div>'
-                    f'<div class="ten-hang">{ten}</div>'
-                    f'{"<span class=nhom-hang-tag>" + nhom + "</span>" if nhom else ""}'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-            with col_ton:
-                st.markdown(
-                    f'<div style="padding-top:16px;text-align:right;">'
-                    f'<span class="{badge_class}">{ton:,}</span>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
+        if chon != "— Chọn để xem chi tiết —":
+            ma_chon = chon.split("  —  ")[0].strip()
+            row_agg = agg[agg["Mã hàng"] == ma_chon].iloc[0]
+            detail  = filtered[filtered["Mã hàng"] == ma_chon]
 
-            # ── Chi tiết mở rộng theo chi nhánh ──
-            detail_rows = filtered[filtered["Mã hàng"] == ma]
-            with st.expander("Chi tiết", expanded=False):
-                if len(view_branches) > 1:
-                    # Hiển thị từng chi nhánh
-                    for _, dr in detail_rows.iterrows():
-                        cn = dr.get("Chi nhánh","")
-                        st.markdown(f"**{cn}**")
-                        dc1,dc2,dc3,dc4 = st.columns(4)
-                        dc1.metric("Tồn đầu kỳ",  f"{int(dr.get('Tồn đầu kì',0)):,}")
-                        dc2.metric("Nhập NCC",     f"{int(dr.get('Nhập NCC',0)):,}")
-                        dc3.metric("Xuất bán",     f"{int(dr.get('Xuất bán',0)):,}")
-                        dc4.metric("Tồn cuối kỳ",  f"{int(dr.get('Tồn cuối kì',0)):,}")
-                        st.markdown("---")
-                else:
-                    dr = detail_rows.iloc[0]
-                    dc1,dc2,dc3,dc4 = st.columns(4)
-                    dc1.metric("Tồn đầu kỳ",  f"{int(dr.get('Tồn đầu kì',0)):,}")
-                    dc2.metric("Nhập NCC",     f"{int(dr.get('Nhập NCC',0)):,}")
-                    dc3.metric("Xuất bán",     f"{int(dr.get('Xuất bán',0)):,}")
-                    dc4.metric("Tồn cuối kỳ",  f"{int(dr.get('Tồn cuối kì',0)):,}")
+            # Tên + nhóm
+            st.markdown(f"#### {row_agg['Tên hàng']}")
+            st.caption(f"`{ma_chon}`  ·  {row_agg['Nhóm hàng']}")
+
+            if len(view_branches) > 1:
+                # Nhiều chi nhánh → hiện từng chi nhánh
+                for _, dr in detail.iterrows():
+                    cn = dr.get("Chi nhánh","")
+                    st.markdown(f"**{cn}**")
+                    d1,d2,d3,d4 = st.columns(4)
+                    d1.metric("Tồn đầu kỳ", f"{int(dr.get('Tồn đầu kì',0)):,}")
+                    d2.metric("Nhập NCC",   f"{int(dr.get('Nhập NCC',0)):,}")
+                    d3.metric("Xuất bán",   f"{int(dr.get('Xuất bán',0)):,}")
+                    d4.metric("Tồn cuối kỳ",f"{int(dr.get('Tồn cuối kì',0)):,}")
+                    st.markdown(
+                        "<hr style='margin:6px 0;border-color:#f0f0f0;'>",
+                        unsafe_allow_html=True)
+            else:
+                dr = detail.iloc[0]
+                d1,d2,d3,d4 = st.columns(4)
+                d1.metric("Tồn đầu kỳ", f"{int(dr.get('Tồn đầu kì',0)):,}")
+                d2.metric("Nhập NCC",   f"{int(dr.get('Nhập NCC',0)):,}")
+                d3.metric("Xuất bán",   f"{int(dr.get('Xuất bán',0)):,}")
+                d4.metric("Tồn cuối kỳ",f"{int(dr.get('Tồn cuối kì',0)):,}")
 
     except Exception as e:
         st.error(f"Lỗi tải Hàng hóa: {e}")
