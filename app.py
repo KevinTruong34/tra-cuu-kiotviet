@@ -696,9 +696,9 @@ def module_hang_hoa():
             height=min(420, 42 + len(disp) * 35),
         )
 
-        # Lưu row được chọn
+        # Lưu row được chọn — kiểm tra bounds trước
         sel = event.selection.rows
-        if sel:
+        if sel and sel[0] < len(disp):
             st.session_state["hh_ma_chon"] = disp.iloc[sel[0]]["Mã hàng"]
 
         # ── Nút trạng thái + Panel chi tiết ──
@@ -718,7 +718,11 @@ def module_hang_hoa():
                     use_container_width=True, disabled=True, key="btn_placeholder")
 
         if ma_chon:
-            row_m = filtered[filtered["ma_hang"] == ma_chon].iloc[0]
+            rows_match = filtered[filtered["ma_hang"] == ma_chon]
+            if rows_match.empty:
+                st.session_state.pop("hh_ma_chon", None)
+                st.rerun()
+            row_m = rows_match.iloc[0]
             st.markdown("---")
 
             c_name, c_price = st.columns([3, 1])
