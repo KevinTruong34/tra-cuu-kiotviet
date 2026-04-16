@@ -906,19 +906,29 @@ def module_quan_tri():
                             df_out["gia_ban"] = pd.to_numeric(df_out["gia_ban"], errors="coerce").fillna(0).astype(int)
                         if "dang_kd" in df_out.columns:
                             df_out["dang_kd"] = df_out["dang_kd"].fillna(1).astype(bool)
-                        df_out = df_out.where(pd.notnull(df_out), None)
-                        for col in df_out.columns:
-                            df_out[col] = df_out[col].apply(
-                                lambda x: int(x) if isinstance(x, (np.integer,)) else
-                                          float(x) if isinstance(x, (np.floating,)) else x)
 
-                        st.info(f"{len(df_out)} sản phẩm sẽ được upsert (thêm mới hoặc cập nhật)")
+                        # ── Clean NaN → None triệt để ──
+                        def _clean(val):
+                            if val is None: return None
+                            try:
+                                if pd.isna(val): return None
+                            except Exception: pass
+                            if isinstance(val, (np.integer,)):  return int(val)
+                            if isinstance(val, (np.floating,)): return None if np.isnan(val) else float(val)
+                            if isinstance(val, float) and (val != val): return None  # nan check
+                            return val
+
+                        records = [
+                            {k: _clean(v) for k, v in row.items()}
+                            for row in df_out.to_dict(orient="records")
+                        ]
+
+                        st.info(f"{len(records)} sản phẩm sẽ được upsert (thêm mới hoặc cập nhật)")
                         with st.expander("Xem trước"):
                             st.dataframe(df_out.head(), use_container_width=True, hide_index=True)
 
                         if st.button("Upload Hàng hóa", key="btn_up_hh", type="primary"):
                             with st.spinner("Đang upload..."):
-                                records = df_out.to_dict(orient="records")
                                 total, ok = len(records), 0
                                 prog = st.progress(0, text="Đang upload...")
                                 for i in range(0, total, 500):
