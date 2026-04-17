@@ -247,6 +247,7 @@ ARCHIVED_MARKER = "Chuyển hàng (App - đã đồng bộ)"
 # ==========================================
 
 COOKIE_NAME = "ws_session_token"
+COOKIE_BRANCH = "ws_active_branch"
 # Ngày expiry của cookie — khớp với session trong DB (30 ngày)
 COOKIE_EXPIRY_DAYS = 30
 
@@ -265,38 +266,85 @@ def _get_cookie_controller():
     return st.session_state.get("_cookie_ctrl")
 
 
-def get_token_from_cookie():
-    """
-    Lấy token từ cookie.
-    Dùng st.context.cookies (đọc từ HTTP request header, đồng bộ, có ngay)
-    thay vì CookieController.get() (bị async, trả None lần đầu).
-    Fallback sang URL param nếu cookie chưa có (migration từ phiên cũ).
-    """
-    # 1. Đọc từ st.context.cookies — reliable, đồng bộ
-    try:
-        cookies_dict = st.context.cookies
-        if cookies_dict and COOKIE_NAME in cookies_dict:
-            val = cookies_dict[COOKIE_NAME]
-            if val:
-                return str(val)
-    except Exception:
-        pass
+def _get_all_cookies() -> dict:
+    """Lấy tất cả cookies từ CookieController. Cache trong session_state
+    để tránh gọi nhiều lần (tránh rerun thừa)."""
+    # Cache cho 1 chu kỳ script — refresh khi rerun
+    if "_cookies_cache" in st.session_state:
+        return st.session_state["_cookies_cache"]
 
-    # 2. Fallback: thử CookieController (có thể đã sync)
+    result = {}
     ctrl = _get_cookie_controller()
     if ctrl is not None:
         try:
-            val = ctrl.get(COOKIE_NAME)
-            if val:
-                return str(val)
+            all_cookies = ctrl.getAll()
+            if all_cookies and isinstance(all_cookies, dict):
+                result = all_cookies
         except Exception:
             pass
 
-    # 3. Migrate từ URL cũ
+    # Fallback: thử đọc từ st.context.cookies (không hoạt động trên Cloud
+    # nhưng có thể hoạt động ở local)
+    if not result:
+        try:
+            ctx_cookies = dict(st.context.cookies) if st.context.cookies else {}
+            if ctx_cookies:
+                result = ctx_cookies
+        except Exception:
+            pass
+
+    st.session_state["_cookies_cache"] = result
+    return result
+
+
+def get_token_from_cookie():
+    """Lấy token từ cookie. Fallback sang URL nếu cookie chưa có (migration)."""
+    all_cookies = _get_all_cookies()
+    val = all_cookies.get(COOKIE_NAME)
+    if val:
+        return str(val)
+
+    # Migrate từ URL cũ
     url_token = st.query_params.get("token")
     if url_token:
         return url_token
     return None
+
+
+def get_branch_from_cookie():
+    """Lấy chi nhánh đã chọn từ cookie."""
+    all_cookies = _get_all_cookies()
+    val = all_cookies.get(COOKIE_BRANCH)
+    return str(val) if val else None
+
+
+def save_branch_to_cookie(branch: str):
+    """Lưu chi nhánh hiện tại vào cookie."""
+    ctrl = _get_cookie_controller()
+    if ctrl is None: return
+    try:
+        expires = datetime.utcnow() + timedelta(days=COOKIE_EXPIRY_DAYS)
+        ctrl.set(
+            COOKIE_BRANCH, branch,
+            expires=expires,
+            same_site="lax",
+            path="/",
+        )
+        # Invalidate cache
+        st.session_state.pop("_cookies_cache", None)
+    except Exception:
+        pass
+
+
+def clear_branch_cookie():
+    """Xóa cookie chi nhánh."""
+    ctrl = _get_cookie_controller()
+    if ctrl is not None:
+        try:
+            ctrl.remove(COOKIE_BRANCH)
+            st.session_state.pop("_cookies_cache", None)
+        except Exception:
+            pass
 
 
 def save_token_to_cookie(token: str):
@@ -317,6 +365,8 @@ def save_token_to_cookie(token: str):
             same_site="lax",
             path="/",
         )
+        # Invalidate cache để lần đọc tiếp theo lấy được value mới
+        st.session_state.pop("_cookies_cache", None)
     except Exception as e:
         # Best-effort fallback về URL nếu cookie set bị lỗi (không im lặng)
         st.warning(f"Không lưu được cookie: {e}. Dùng fallback URL.")
@@ -331,6 +381,12 @@ def clear_token_cookie():
             ctrl.remove(COOKIE_NAME)
         except Exception:
             pass
+        try:
+            ctrl.remove(COOKIE_BRANCH)
+        except Exception:
+            pass
+    # Invalidate cache
+    st.session_state.pop("_cookies_cache", None)
     # Dọn URL param nếu còn sót từ phiên cũ
     if "token" in st.query_params:
         del st.query_params["token"]
@@ -495,69 +551,89 @@ def show_first_run():
 # ==========================================
 
 def show_login():
+    """
+    Form đăng nhập kết hợp — 2 giai đoạn:
+    1. Nhập username + password → verify
+    2. Sau khi verify đúng, hiện dropdown chi nhánh → chọn + submit
+    Lợi ích:
+    - Gộp login + chọn CN thành 1 flow liền mạch
+    - Không lộ danh sách chi nhánh với người không có tài khoản
+    - Sau khi xong, lưu cả token + chi nhánh vào cookie để F5 khôi phục đủ
+    """
     st.title("Đăng nhập")
-    with st.form("login", clear_on_submit=False, border=False):
-        u = st.text_input("Tài khoản:", placeholder="Nhập tên tài khoản")
-        p = st.text_input("Mật khẩu:", type="password", placeholder="Nhập mật khẩu")
-        submitted = st.form_submit_button("Đăng nhập", type="primary", use_container_width=True)
-        if submitted:
-            if not u or not p:
-                st.error("Nhập đầy đủ.")
-            else:
-                with st.spinner("Đang xác thực..."):
-                    user, err = do_login(u, p)
-                if err:
-                    st.error(err)
+
+    # Giai đoạn 1: nếu chưa xác thực user
+    pending_user = st.session_state.get("_pending_user")
+
+    if not pending_user:
+        with st.form("login_step1", clear_on_submit=False, border=False):
+            u = st.text_input("Tài khoản:", placeholder="Nhập tên tài khoản")
+            p = st.text_input("Mật khẩu:", type="password", placeholder="Nhập mật khẩu")
+            submitted = st.form_submit_button(
+                "Tiếp tục", type="primary", use_container_width=True
+            )
+            if submitted:
+                if not u or not p:
+                    st.error("Nhập đầy đủ.")
                 else:
-                    token = create_session_token(user["id"])
-                    st.session_state["user"] = user
-                    save_token_to_cookie(token)
-                    # Delay ngắn để cookie kịp được ghi vào browser
-                    # trước khi rerun (cookie-controller cần 1 vòng JS exchange)
-                    import time
-                    time.sleep(0.3)
-                    st.rerun()
+                    with st.spinner("Đang xác thực..."):
+                        user, err = do_login(u, p)
+                    if err:
+                        st.error(err)
+                    else:
+                        branches = (ALL_BRANCHES if user.get("role") == "admin"
+                                   else user.get("chi_nhanh_list", []))
+                        if not branches:
+                            st.error("Tài khoản chưa được gán chi nhánh. "
+                                    "Liên hệ admin để được hỗ trợ.")
+                        elif len(branches) == 1:
+                            # Chỉ có 1 CN — login + set active luôn, không cần hỏi
+                            _finalize_login(user, branches[0])
+                        else:
+                            # Chuyển sang giai đoạn 2 (chọn chi nhánh)
+                            st.session_state["_pending_user"] = user
+                            st.rerun()
+    else:
+        # Giai đoạn 2: đã verify user, chọn chi nhánh
+        branches = (ALL_BRANCHES if pending_user.get("role") == "admin"
+                   else pending_user.get("chi_nhanh_list", []))
 
+        st.markdown(
+            f"<div style='text-align:center;padding:8px 0 16px 0;'>"
+            f"<div style='font-size:1.05rem;font-weight:600;color:#1a1a2e;'>"
+            f"Xin chào, {pending_user.get('ho_ten','')}</div>"
+            f"<div style='font-size:0.85rem;color:#888;margin-top:2px;'>"
+            f"Chọn chi nhánh để bắt đầu</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
-# ==========================================
-# BRANCH SELECTION — TẤT CẢ NÚT CÙNG MÀU
-# ==========================================
-
-def show_branch_selection():
-    user     = get_user()
-    branches = get_selectable_branches()
-
-    if len(branches) == 1:
-        st.session_state["active_chi_nhanh"] = branches[0]
-        st.rerun(); return
-
-    _, mid, _ = st.columns([1, 2, 1])
-    with mid:
-        st.markdown(f"""
-            <div style="text-align:center;padding:32px 0 24px 0;">
-                <div style="font-size:1.5rem;font-weight:700;color:#1a1a2e;margin-bottom:4px;">
-                    Xin chào, {user.get('ho_ten','')}
-                </div>
-                <div style="font-size:0.9rem;color:#888;">
-                    Chọn chi nhánh để bắt đầu ca làm việc
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-
-        # TẤT CẢ nút chi nhánh cùng màu secondary (không có nút đầu đỏ nữa)
         for i, branch in enumerate(branches):
-            if st.button(
-                branch,
-                key=f"sel_{i}",
-                use_container_width=True,
-                type="secondary",
-            ):
-                st.session_state["active_chi_nhanh"] = branch
-                st.rerun()
+            if st.button(branch, key=f"login_cn_{i}",
+                        use_container_width=True, type="secondary"):
+                _finalize_login(pending_user, branch)
 
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Đăng xuất", use_container_width=True, key="logout_branch"):
-            do_logout(); st.rerun()
+        if st.button("← Quay lại", key="login_back",
+                    use_container_width=True):
+            st.session_state.pop("_pending_user", None)
+            st.rerun()
+
+
+def _finalize_login(user: dict, branch: str):
+    """Hoàn tất login: tạo session, lưu cookie cho token + chi nhánh."""
+    token = create_session_token(user["id"])
+    st.session_state["user"] = user
+    st.session_state["active_chi_nhanh"] = branch
+    st.session_state.pop("_pending_user", None)
+
+    save_token_to_cookie(token)
+    save_branch_to_cookie(branch)
+
+    # Delay cho cookie kịp ghi vào browser trước khi rerun
+    import time
+    time.sleep(0.3)
+    st.rerun()
 
 
 # ==========================================
@@ -580,18 +656,58 @@ if "user" not in st.session_state:
             if "token" in st.query_params:
                 save_token_to_cookie(token)
                 del st.query_params["token"]
+
+            # Khôi phục chi nhánh từ cookie (nếu có và hợp lệ)
+            saved_branch = get_branch_from_cookie()
+            if saved_branch:
+                accessible = (ALL_BRANCHES if user.get("role") == "admin"
+                             else user.get("chi_nhanh_list", []))
+                if saved_branch in accessible:
+                    st.session_state["active_chi_nhanh"] = saved_branch
         else:
             # Token invalid/expired → dọn sạch
             clear_token_cookie()
-    # Nếu không có token → show login form (bình thường)
-    # KHÔNG chặn/đợi gì thêm — cookie-controller tự trigger rerun khi cần
 
 if "user" not in st.session_state:
     show_first_run() if is_first_run() else show_login()
     st.stop()
 
+# Nếu user đã login nhưng chưa có active_chi_nhanh (edge case: cookie chi
+# nhánh bị mất hoặc chi nhánh đã bị xóa khỏi quyền) → hiện form chọn lại
 if "active_chi_nhanh" not in st.session_state:
-    show_branch_selection(); st.stop()
+    user = get_user()
+    branches = (ALL_BRANCHES if user.get("role") == "admin"
+               else user.get("chi_nhanh_list", []))
+    if len(branches) == 1:
+        st.session_state["active_chi_nhanh"] = branches[0]
+        save_branch_to_cookie(branches[0])
+        st.rerun()
+    elif branches:
+        st.markdown(
+            f"<div style='text-align:center;padding:20px 0;'>"
+            f"<div style='font-size:1.05rem;font-weight:600;'>"
+            f"Xin chào, {user.get('ho_ten','')}</div>"
+            f"<div style='font-size:0.85rem;color:#888;margin-top:2px;'>"
+            f"Chọn chi nhánh để bắt đầu</div></div>",
+            unsafe_allow_html=True
+        )
+        for i, branch in enumerate(branches):
+            if st.button(branch, key=f"re_cn_{i}",
+                        use_container_width=True, type="secondary"):
+                st.session_state["active_chi_nhanh"] = branch
+                save_branch_to_cookie(branch)
+                st.rerun()
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Đăng xuất", key="re_logout",
+                    use_container_width=True):
+            do_logout(); st.rerun()
+        st.stop()
+    else:
+        st.error("Tài khoản của bạn chưa được gán chi nhánh. "
+                "Liên hệ admin để được hỗ trợ.")
+        if st.button("Đăng xuất"):
+            do_logout(); st.rerun()
+        st.stop()
 
 
 # ==========================================
@@ -2549,6 +2665,7 @@ with col_avatar:
                              type="primary" if is_active_cn else "secondary",
                              disabled=is_active_cn):
                     st.session_state["active_chi_nhanh"] = cn
+                    save_branch_to_cookie(cn)
                     # reset giỏ tạo phiếu khi đổi CN
                     st.session_state.pop("ck_items", None)
                     st.rerun()
