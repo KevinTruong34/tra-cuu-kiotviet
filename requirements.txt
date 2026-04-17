@@ -4,4 +4,4 @@ plotly
 supabase
 bcrypt
 openpyxl
-streamlit-cookies-controller
+streamlit-cookies-manager
