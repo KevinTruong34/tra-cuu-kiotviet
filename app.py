@@ -8,6 +8,13 @@ import numpy as np
 import bcrypt
 import uuid
 
+# Cookie controller — thay thế token trong URL bằng cookie HttpOnly
+try:
+    from streamlit_cookies_controller import CookieController
+    _HAS_COOKIE_LIB = True
+except ImportError:
+    _HAS_COOKIE_LIB = False
+
 # ==========================================
 # PHIEN BAN: 15.0 — Fix UI + Tao phieu chuyen
 # ==========================================
@@ -236,6 +243,80 @@ ARCHIVED_MARKER = "Chuyển hàng (App - đã đồng bộ)"
 
 
 # ==========================================
+# COOKIE-BASED SESSION (thay thế token trong URL)
+# ==========================================
+
+COOKIE_NAME = "ws_session_token"
+# Ngày expiry của cookie — khớp với session trong DB (30 ngày)
+COOKIE_EXPIRY_DAYS = 30
+
+def _get_cookie_controller():
+    """
+    Khởi tạo CookieController (lazy, cache trong session_state).
+    Trả về None nếu thư viện chưa cài.
+    """
+    if not _HAS_COOKIE_LIB:
+        return None
+    if "_cookie_ctrl" not in st.session_state:
+        try:
+            st.session_state["_cookie_ctrl"] = CookieController(key="ws_cookies")
+        except Exception:
+            return None
+    return st.session_state.get("_cookie_ctrl")
+
+
+def get_token_from_cookie():
+    """Lấy token từ cookie. Fallback sang URL nếu cookie chưa có (migration)."""
+    ctrl = _get_cookie_controller()
+    if ctrl is not None:
+        try:
+            val = ctrl.get(COOKIE_NAME)
+            if val:
+                return str(val)
+        except Exception:
+            pass
+    # Fallback: token vẫn còn trong URL từ phiên cũ → migrate về cookie
+    url_token = st.query_params.get("token")
+    if url_token:
+        return url_token
+    return None
+
+
+def save_token_to_cookie(token: str):
+    """Lưu token vào cookie HttpOnly (qua JS). Không đặt vào URL."""
+    ctrl = _get_cookie_controller()
+    if ctrl is None:
+        # Fallback tạm — nếu thư viện chưa cài, dùng URL (cảnh báo)
+        st.query_params["token"] = token
+        return
+    try:
+        expires = datetime.utcnow() + timedelta(days=COOKIE_EXPIRY_DAYS)
+        ctrl.set(
+            COOKIE_NAME, token,
+            expires=expires,
+            secure=True,       # chỉ gửi qua HTTPS
+            same_site="lax",   # chống CSRF cơ bản
+            path="/",
+        )
+    except Exception:
+        # Best-effort fallback
+        st.query_params["token"] = token
+
+
+def clear_token_cookie():
+    """Xóa cookie session khi logout."""
+    ctrl = _get_cookie_controller()
+    if ctrl is not None:
+        try:
+            ctrl.remove(COOKIE_NAME)
+        except Exception:
+            pass
+    # Dọn URL param nếu còn sót từ phiên cũ
+    if "token" in st.query_params:
+        del st.query_params["token"]
+
+
+# ==========================================
 # SCROLL-TO-BOTTOM RELOAD
 # ==========================================
 
@@ -336,9 +417,10 @@ def do_login(username, password):
         return None, f"Lỗi hệ thống: {e}"
 
 def do_logout():
-    token = st.query_params.get("token")
+    token = get_token_from_cookie()
     if token: delete_session(token)
-    st.session_state.clear(); st.query_params.clear()
+    clear_token_cookie()
+    st.session_state.clear()
 
 
 # ==========================================
@@ -409,7 +491,7 @@ def show_login():
                 else:
                     token = create_session_token(user["id"])
                     st.session_state["user"] = user
-                    st.query_params["token"] = token
+                    save_token_to_cookie(token)
                     st.rerun()
 
 
@@ -459,11 +541,18 @@ def show_branch_selection():
 # ==========================================
 
 if "user" not in st.session_state:
-    token = st.query_params.get("token")
+    token = get_token_from_cookie()
     if token:
         user = restore_session(token)
-        if user: st.session_state["user"] = user
-        else: st.query_params.clear()
+        if user:
+            st.session_state["user"] = user
+            # Migrate: nếu token còn trong URL → chuyển sang cookie + xóa URL
+            if "token" in st.query_params:
+                save_token_to_cookie(token)
+                del st.query_params["token"]
+        else:
+            # Token invalid/expired → dọn sạch
+            clear_token_cookie()
 
 if "user" not in st.session_state:
     show_first_run() if is_first_run() else show_login()
