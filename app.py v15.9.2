@@ -698,6 +698,65 @@ def load_stock_deltas() -> dict:
     return deltas
 
 
+@st.cache_data(ttl=600)
+def get_archive_reminder() -> dict:
+    """
+    Kiểm tra có cần nhắc admin kết sổ phiếu App không.
+
+    Trả về dict:
+      - need_reminder: True nếu thoả cả 2 điều kiện
+      - n_active: số phiếu App (không phải dòng) đang active
+      - days_oldest: số ngày kể từ phiếu App cũ nhất
+      - oldest_date: ngày phiếu cũ nhất (date object)
+
+    Điều kiện nhắc: > 30 ngày kể từ phiếu App cũ nhất chưa archive
+                    VÀ có > 20 phiếu App active (đếm theo ma_phieu unique).
+    """
+    THRESHOLD_DAYS = 30
+    THRESHOLD_PHIEU = 20
+
+    try:
+        res = supabase.table("phieu_chuyen_kho") \
+            .select("ma_phieu, ngay_chuyen") \
+            .eq("loai_phieu", IN_APP_MARKER) \
+            .execute()
+        if not res.data:
+            return {"need_reminder": False, "n_active": 0,
+                    "days_oldest": 0, "oldest_date": None}
+
+        # Đếm số phiếu unique + tìm ngày cũ nhất
+        unique_phieu = {}
+        for r in res.data:
+            ma = r.get("ma_phieu")
+            ngay = r.get("ngay_chuyen")
+            if ma and ngay and ma not in unique_phieu:
+                unique_phieu[ma] = ngay
+
+        n_active = len(unique_phieu)
+        if n_active == 0:
+            return {"need_reminder": False, "n_active": 0,
+                    "days_oldest": 0, "oldest_date": None}
+
+        oldest_iso = min(unique_phieu.values())
+        oldest_dt = pd.to_datetime(oldest_iso, errors="coerce")
+        if pd.isna(oldest_dt):
+            return {"need_reminder": False, "n_active": n_active,
+                    "days_oldest": 0, "oldest_date": None}
+
+        days_oldest = (datetime.now() - oldest_dt.to_pydatetime()).days
+
+        need = (days_oldest > THRESHOLD_DAYS) and (n_active > THRESHOLD_PHIEU)
+        return {
+            "need_reminder": need,
+            "n_active": n_active,
+            "days_oldest": days_oldest,
+            "oldest_date": oldest_dt.date(),
+        }
+    except Exception:
+        return {"need_reminder": False, "n_active": 0,
+                "days_oldest": 0, "oldest_date": None}
+
+
 @st.cache_data(ttl=300)
 def load_the_kho(branches_key: tuple):
     rows, batch, offset = [], 1000, 0
@@ -2314,6 +2373,17 @@ def module_nhan_vien():
 def module_quan_tri():
     if not is_admin():
         st.error("Bạn không có quyền truy cập."); return
+
+    # ── Banner nhắc kết sổ (nếu vượt ngưỡng) ──
+    rem = get_archive_reminder()
+    if rem["need_reminder"]:
+        st.warning(
+            f"⚠ **Nên kết sổ phiếu App** — đã **{rem['days_oldest']} ngày** kể từ "
+            f"phiếu App cũ nhất (ngày {rem['oldest_date'].strftime('%d/%m/%Y')}), "
+            f"hiện có **{rem['n_active']} phiếu** đang tính delta vào tồn kho. "
+            f"Quy trình: upload `the_kho` mới từ KiotViet ở tab **Upload**, "
+            f"rồi sang tab **Xóa dữ liệu** để nhấn nút **Kết sổ tất cả phiếu App**."
+        )
 
     tab_ds, tab_up, tab_del, tab_nv = st.tabs(["Doanh số","Upload","Xóa dữ liệu","Nhân viên"])
 
