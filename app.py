@@ -7,6 +7,33 @@ from datetime import datetime, timedelta
 import numpy as np
 import bcrypt
 import uuid
+import logging
+
+# ==========================================
+# LOGGING — ghi ra stdout (Streamlit Cloud lưu ~7 ngày)
+# ==========================================
+# Format: [thời gian] [level] [user@chi_nhanh] action: chi tiết
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+_logger = logging.getLogger("watchstore")
+
+
+def log_action(action: str, detail: str = "", level: str = "info"):
+    """
+    Ghi log hành động của user.
+    Prefix tự động [username@chi_nhanh] để biết ai làm gì.
+    """
+    user = st.session_state.get("user") or {}
+    cn   = st.session_state.get("active_chi_nhanh", "-")
+    username = user.get("username", "anonymous")
+    prefix = f"[{username}@{cn}]"
+    msg = f"{prefix} {action}"
+    if detail:
+        msg += f" — {detail}"
+    getattr(_logger, level, _logger.info)(msg)
 
 # ==========================================
 # PHIEN BAN: 15.0 — Fix UI + Tao phieu chuyen
@@ -364,18 +391,27 @@ def restore_session(token):
 def do_login(username, password):
     try:
         res = supabase.table("nhan_vien").select("*").eq("username", username).eq("active", True).execute()
-        if not res.data: return None, "Tài khoản không tồn tại hoặc đã bị khóa."
+        if not res.data:
+            _logger.warning(f"LOGIN_FAIL — username={username} (không tồn tại/bị khóa)")
+            return None, "Tài khoản không tồn tại hoặc đã bị khóa."
         u = res.data[0]
-        if not verify_password(password, u["mat_khau"]): return None, "Mật khẩu không chính xác."
+        if not verify_password(password, u["mat_khau"]):
+            _logger.warning(f"LOGIN_FAIL — username={username} (sai mật khẩu)")
+            return None, "Mật khẩu không chính xác."
         u.pop("mat_khau", None)
         cn = supabase.table("nhan_vien_chi_nhanh") \
             .select("chi_nhanh(ten)").eq("nhan_vien_id", u["id"]).execute()
         u["chi_nhanh_list"] = [x["chi_nhanh"]["ten"] for x in cn.data] if cn.data else []
+        _logger.info(f"LOGIN_OK — username={username} role={u.get('role','?')}")
         return u, None
     except Exception as e:
+        _logger.error(f"LOGIN_ERROR — username={username}: {e}")
         return None, f"Lỗi hệ thống: {e}"
 
 def do_logout():
+    user = st.session_state.get("user") or {}
+    username = user.get("username", "?")
+    _logger.info(f"LOGOUT — username={username}")
     token = get_token_from_url()
     if token: delete_session(token)
     clear_session_params()
@@ -1651,18 +1687,22 @@ def _handle_action(action: str, ma_phieu: str, df_phieu: pd.DataFrame,
         if action == "xac_nhan":
             _update_trang_thai_phieu(ma_phieu, "Đang chuyển")
             st.cache_data.clear()
+            log_action("PHIEU_CONFIRM", f"ma={ma_phieu} tu={tu_cn} toi={toi_cn}")
             st.success(f"✓ Đã xác nhận chuyển hàng cho phiếu {ma_phieu}")
             st.rerun()
 
         elif action == "nhan":
             _nhan_hang(ma_phieu)
             st.cache_data.clear()
+            log_action("PHIEU_RECEIVE", f"ma={ma_phieu} tu={tu_cn} toi={toi_cn}")
             st.success(f"✓ Đã nhận hàng cho phiếu {ma_phieu}")
             st.rerun()
 
         elif action == "huy":
             _update_trang_thai_phieu(ma_phieu, "Đã hủy")
             st.cache_data.clear()
+            log_action("PHIEU_CANCEL", f"ma={ma_phieu} tu={tu_cn} toi={toi_cn}",
+                      level="warning")
             st.success(f"✓ Đã hủy phiếu {ma_phieu}")
             st.rerun()
 
@@ -1823,14 +1863,23 @@ def _tao_phieu_chuyen():
     if st.session_state["ck_items"]:
         total_sl = 0
         total_gb = 0
+        has_overflow = False  # Track có item nào vượt tồn không
         for idx, it in enumerate(st.session_state["ck_items"]):
+            ton_src = int(it.get("ton_src", 0))
+            over    = it["so_luong"] > ton_src
+            if over: has_overflow = True
+
             c_tn, c_sl, c_del = st.columns([4, 2, 1])
             with c_tn:
+                # Highlight đỏ nếu vượt tồn
+                ton_color = "#cf4c2c" if over else "#888"
+                ton_label = (f"Tồn nguồn: <b style='color:{ton_color};'>{ton_src}</b>"
+                            + (" ⚠ vượt tồn" if over else ""))
                 st.markdown(
                     f"<div style='padding-top:10px;font-size:0.85rem;'>"
                     f"<b>{it['ten_hang']}</b><br>"
                     f"<span style='font-family:monospace;font-size:0.72rem;color:#777;'>{it['ma_hang']}</span>"
-                    f" · <span style='color:#888;font-size:0.72rem;'>Tồn nguồn: {it.get('ton_src',0)}</span>"
+                    f" · <span style='font-size:0.72rem;color:{ton_color};'>{ton_label}</span>"
                     f"</div>",
                     unsafe_allow_html=True
                 )
@@ -1851,6 +1900,13 @@ def _tao_phieu_chuyen():
 
             total_sl += it["so_luong"]
             total_gb += it["so_luong"] * it["gia_ban"]
+
+        # Hiện cảnh báo tổng hợp nếu có item vượt tồn
+        if has_overflow:
+            st.warning(
+                "⚠ Một số sản phẩm có SL chuyển vượt tồn nguồn. "
+                "Không thể tạo phiếu cho đến khi sửa lại."
+            )
 
         # Tổng
         st.markdown(
@@ -1873,7 +1929,10 @@ def _tao_phieu_chuyen():
         with col_submit:
             submit_label = "💾 Cập nhật phiếu" if editing_ma else "✓ Tạo phiếu chuyển"
             if st.button(submit_label, use_container_width=True,
-                        type="primary", key="ck_submit"):
+                        type="primary", key="ck_submit",
+                        disabled=has_overflow,
+                        help=("Sửa SL các mặt hàng vượt tồn trước khi tạo phiếu"
+                              if has_overflow else None)):
                 if tu_cn == toi_cn:
                     st.error("Chi nhánh nguồn và đích phải khác nhau.")
                 elif not nguoi_tao.strip():
@@ -1962,9 +2021,59 @@ def _tao_phieu_chuyen():
         st.caption("Gõ mã/tên sản phẩm để tìm kiếm.")
 
 
+def _validate_stock(tu_cn: str, items: list, editing_ma: str = None) -> tuple:
+    """
+    Kiểm tra SL chuyển có vượt quá tồn hiệu dụng không.
+    Trả về (ok: bool, errors: list[str]).
+
+    Khi edit: cộng bù lại SL của phiếu cũ (vì phiếu cũ đang trong trạng thái
+    Phiếu tạm nên chưa ảnh hưởng delta, nhưng logic đúng hơn là tính độc lập).
+    Phiếu tạm → delta=0, nên chỉ cần so với tồn hiện tại.
+    """
+    if not tu_cn or not items:
+        return True, []
+
+    # Load tồn hiệu dụng hiện tại tại CN nguồn (đã áp dụng delta từ phiếu App)
+    kho = load_the_kho(branches_key=(tu_cn,))
+    if kho.empty or "Mã hàng" not in kho.columns:
+        return True, []  # Không có dữ liệu kho → skip (fallback mềm)
+
+    ton_map = dict(zip(
+        kho["Mã hàng"].astype(str),
+        kho["Tồn cuối kì"].fillna(0).astype(int)
+    ))
+
+    errors = []
+    for it in items:
+        mh = str(it["ma_hang"])
+        sl = int(it["so_luong"])
+        ton = ton_map.get(mh, 0)
+        if sl > ton:
+            errors.append(
+                f"• **{it['ten_hang']}** ({mh}): "
+                f"yêu cầu chuyển {sl:,}, tồn hiệu dụng chỉ có {ton:,}"
+            )
+    return len(errors) == 0, errors
+
+
 def _submit_phieu(tu_cn: str, toi_cn: str, nguoi_tao: str, ghi_chu: str,
                   items: list, editing_ma: str = None):
     """Insert phiếu mới hoặc update phiếu đang sửa."""
+    # ── Validate tồn kho trước khi submit ──
+    ok, errors = _validate_stock(tu_cn, items, editing_ma=editing_ma)
+    if not ok:
+        st.error(
+            "**Không thể tạo phiếu** — một số sản phẩm vượt quá tồn hiệu dụng "
+            f"tại **{tu_cn}**:\n\n" + "\n".join(errors) +
+            "\n\nVui lòng giảm SL hoặc xóa sản phẩm khỏi giỏ rồi thử lại."
+        )
+        log_action(
+            "STOCK_VALIDATION_FAIL",
+            f"tu={tu_cn} items={len(items)} errors={len(errors)}",
+            level="warning"
+        )
+        return
+
     try:
         with st.spinner("Đang xử lý..."):
             ma_phieu = editing_ma or _gen_ma_phieu()
@@ -2009,9 +2118,19 @@ def _submit_phieu(tu_cn: str, toi_cn: str, nguoi_tao: str, ghi_chu: str,
                 _delete_phieu_rows(editing_ma)
                 supabase.table("phieu_chuyen_kho").insert(records).execute()
                 msg = f"💾 Đã cập nhật phiếu **{ma_phieu}**!"
+                log_action(
+                    "PHIEU_UPDATE",
+                    f"ma={ma_phieu} tu={tu_cn} toi={toi_cn} "
+                    f"sl={tong_sl} items={tong_mat}"
+                )
             else:
                 supabase.table("phieu_chuyen_kho").insert(records).execute()
                 msg = f"✓ Tạo phiếu **{ma_phieu}** thành công!"
+                log_action(
+                    "PHIEU_CREATE",
+                    f"ma={ma_phieu} tu={tu_cn} toi={toi_cn} "
+                    f"sl={tong_sl} items={tong_mat} gtri={int(tong_gtri)}"
+                )
 
             # Reset
             st.session_state["ck_items"] = []
@@ -2220,6 +2339,7 @@ def module_quan_tri():
                                         st.error(f"Batch {i}: {e}")
                                 prog.empty()
                                 if ok == total:
+                                    log_action("UPLOAD_HANG_HOA", f"rows={ok}")
                                     st.success(f"✅ Upsert {ok} sản phẩm thành công!")
                                     st.cache_data.clear()
                 except Exception as e:
@@ -2263,6 +2383,7 @@ def module_quan_tri():
                                     except Exception as e: st.error(f"Batch {i}: {e}")
                                 prog.empty()
                                 if ok==total:
+                                    log_action("UPLOAD_THE_KHO", f"rows={ok}")
                                     st.success(f"Upload {ok} dòng thành công!"); st.cache_data.clear()
                 except Exception as e: st.error(f"Lỗi: {e}")
 
@@ -2303,6 +2424,7 @@ def module_quan_tri():
                                     except Exception as e: st.error(f"Batch {i}: {e}")
                                 prog.empty()
                                 if ok==total:
+                                    log_action("UPLOAD_HOA_DON", f"rows={ok}")
                                     st.success(f"Upload {ok} dòng thành công!"); st.cache_data.clear()
                 except Exception as e: st.error(f"Lỗi: {e}")
 
@@ -2394,6 +2516,8 @@ def module_quan_tri():
                                         st.error(f"Batch {i}: {e}")
                                 prog.empty()
                                 if ok == total:
+                                    log_action("UPLOAD_CHUYEN_KHO",
+                                              f"rows={ok} phieu={df['Mã chuyển hàng'].nunique()}")
                                     st.success(f"✅ Upload {ok} dòng ({df['Mã chuyển hàng'].nunique()} phiếu)!")
                                     st.cache_data.clear()
                 except Exception as e:
@@ -2435,7 +2559,11 @@ def module_quan_tri():
                             q = q.neq("id", -999999)
                         else:
                             q = q.eq("Chi nhánh",cn_x) if cn_x!="Tất cả" else q.neq("id",-999999)
-                        q.execute(); st.success("Xóa thành công!"); st.cache_data.clear()
+                        q.execute()
+                        log_action("DATA_DELETE",
+                                  f"table={bang} chi_nhanh={cn_x} count={cnt}",
+                                  level="warning")
+                        st.success("Xóa thành công!"); st.cache_data.clear()
                     except Exception as e: st.error(f"Lỗi: {e}")
 
         # ══════ KẾT SỔ PHIẾU APP ══════
@@ -2468,6 +2596,7 @@ def module_quan_tri():
                     {"loai_phieu": ARCHIVED_MARKER}
                 ).eq("loai_phieu", IN_APP_MARKER).execute()
                 st.cache_data.clear()
+                log_action("PHIEU_ARCHIVE", f"rows={n_active}")
                 st.success(f"✓ Đã kết sổ {n_active} dòng phiếu App!")
                 st.rerun()
             except Exception as e:
@@ -2481,6 +2610,8 @@ def module_quan_tri():
                         {"loai_phieu": IN_APP_MARKER}
                     ).eq("loai_phieu", ARCHIVED_MARKER).execute()
                     st.cache_data.clear()
+                    log_action("PHIEU_RESTORE", f"rows={n_archived}",
+                              level="warning")
                     st.success(f"✓ Đã khôi phục {n_archived} dòng!")
                     st.rerun()
                 except Exception as e:
